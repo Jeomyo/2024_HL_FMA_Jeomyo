@@ -5,9 +5,9 @@ import rospy
 import cv2
 import numpy as np
 import math
-import time
-from sensor_msgs.msg import PointCloud2, CompressedImage
-from std_msgs.msg import Float32MultiArray, Float32  # 바운딩 박스 데이터 송신
+from sensor_msgs.msg import PointCloud2, PointCloud, CompressedImage
+from geometry_msgs.msg import Point32
+from std_msgs.msg import Float32  # 바운딩 박스 데이터 송신
 import sensor_msgs.point_cloud2 as pc2
 from scipy.spatial import KDTree
 from numpy.linalg import inv
@@ -48,7 +48,6 @@ def getRotMat(RPY):
     rotMat = rotYaw.dot(rotPitch.dot(rotRoll))
     return rotMat
 
-
 def getSensorToVehicleMat(sensorRPY, sensorPosition):
     sensorRotationMat = getRotMat(sensorRPY)
     sensorTranslationMat = np.array([sensorPosition])
@@ -58,7 +57,6 @@ def getSensorToVehicleMat(sensorRPY, sensorPosition):
 
     return Tr_sensor_to_vehicle
 
-
 def getLiDARTOCameraTransformMat(camRPY, camPosition, lidarRPY, lidarPosition):
     Tr_lidar_to_vehicle = getSensorToVehicleMat(lidarRPY, lidarPosition)
     Tr_cam_to_vehicle = getSensorToVehicleMat(camRPY, camPosition)
@@ -67,7 +65,6 @@ def getLiDARTOCameraTransformMat(camRPY, camPosition, lidarRPY, lidarPosition):
 
     print(Tr_lidar_to_cam)
     return Tr_lidar_to_cam
-
 
 def getTransformMat(params_cam, params_lidar):
     lidarPositionOffset = np.array([0, 0, -0.25])  # VLP16 사용해야 함
@@ -80,7 +77,6 @@ def getTransformMat(params_cam, params_lidar):
     Tr_lidar_to_cam = getLiDARTOCameraTransformMat(camRPY, camPosition, lidarRPY, lidarPosition)
     return Tr_lidar_to_cam
 
-
 def getCameraMat(params_cam):
     focalLength = params_cam["WIDTH"] / (2 * np.tan(np.deg2rad(params_cam["FOV"] / 2)))
     principalX = params_cam["WIDTH"] / 2
@@ -90,7 +86,6 @@ def getCameraMat(params_cam):
     print(CameraMat)
     return CameraMat
 
-
 class LiDARToCameraTransform:
     def __init__(self, params_cam, params_lidar):
         self.scan_sub = rospy.Subscriber("/velodyne_points", PointCloud2, self.scan_callback)  # LiDAR 포인트 클라우드 구독
@@ -98,6 +93,7 @@ class LiDARToCameraTransform:
         self.bbox_sub = rospy.Subscriber("/car_bounding_boxes", Float32MultiArray, self.bbox_callback)  # YOLO 바운딩 박스 구독
         # 차량과의 거리 퍼블리셔 추가
         self.dist_pub = rospy.Publisher('/distance_to_car', Float32, queue_size=1)
+        self.pc_pub = rospy.Publisher('/calib_points', PointCloud, queue_size=1)
         self.pc_np = None
         self.img = None
         self.width = params_cam["WIDTH"]
@@ -137,7 +133,7 @@ class LiDARToCameraTransform:
         
         # 이미지 좌표로 변환
         pc_proj_to_img /= pc_proj_to_img[2, :]
-        
+
         # 이미지 범위를 벗어난 포인트 제외
         valid_indices = (pc_proj_to_img[0, :] >= 0) & (pc_proj_to_img[0, :] < self.width) & \
                         (pc_proj_to_img[1, :] >= 0) & (pc_proj_to_img[1, :] < self.height)
@@ -161,9 +157,19 @@ class LiDARToCameraTransform:
             # KD-Tree를 사용해 가장 가까운 포인트 찾기
             tree = KDTree(filtered_points_3d.T)
             min_distance = tree.query([0, 0, 0], k=1)[0]  # 차량에서 가장 가까운 포인트의 거리 (z축 값 기준)
-            return min_distance
+            return min_distance, filtered_points_3d
         else:
-            return None
+            return None, None
+
+    def create_pointcloud(self, points):
+        pointcloud_msg = PointCloud()
+        pointcloud_msg.header.stamp = rospy.Time.now()
+        pointcloud_msg.header.frame_id = 'base_link'
+
+        for point in points.T:
+            pointcloud_msg.points.append(Point32(point[0], point[1], point[2]))
+
+        return pointcloud_msg
 
     def process_lidar_data(self):
         if self.pc_np is not None and self.img is not None and self.bboxes:
@@ -178,28 +184,21 @@ class LiDARToCameraTransform:
             # 바운딩 박스별로 거리 계산
             found_distance = False
             for bbox in self.bboxes:
-                # 바운딩 박스가 [0, 0, 0, 0]이라면 무시
-                if bbox == (0, 0, 0, 0):
-                    continue  # 무시하고 다음 바운딩 박스로 넘어감
 
-                dist_forward = self.calculate_distance_to_car(bbox, xy_i, xyz_c_filtered)
+                dist_forward, filtered_point_3d = self.calculate_distance_to_car(bbox, xy_i, xyz_c_filtered)
                 if dist_forward is not None:
                     rospy.loginfo(f"Detected car at distance: {dist_forward} meters")
                     self.dist_pub.publish(Float32(dist_forward))  # 거리 퍼블리시
+
+                    # PointCloud 메시지로 퍼블리시
+                    pointcloud_msg = self.create_pointcloud(filtered_point_3d)
+                    self.pc_pub.publish(pointcloud_msg)
                     found_distance = True
 
             if not found_distance:
                 # 유효한 바운딩 박스가 없을 경우, inf 값을 퍼블리시
                 rospy.logwarn("No detect.")
-                self.dist_pub.publish(Float32(float('inf')))  # 무한대나 다른 값을 퍼블리시
-
-
-def draw_pts_img(img, xi, yi):
-    point_np = img
-    for ctr in zip(xi, yi):
-        point_np = cv2.circle(point_np, ctr, 2, (0, 255, 0), -1)
-    return point_np
-
+                self.dist_pub.publish(Float32(float('inf')))
 
 if __name__ == '__main__':
     rospy.init_node('ex_calib', anonymous=True)
