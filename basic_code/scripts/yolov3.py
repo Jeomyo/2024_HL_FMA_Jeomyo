@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Float32MultiArray
+from sort import Sort  # SORT 모듈 가져오기
 
 class IMGParser:
     def __init__(self):
@@ -26,6 +27,9 @@ class IMGParser:
 
         self.latest_image = None
         self.processing = False  # 처리 중인지 확인하는 플래그
+
+        # SORT 트래커 초기화
+        self.sort_tracker = Sort()
 
     def callback(self, msg):
         if not self.processing:  # 처리 중이 아닐 때만 새로운 이미지를 받음
@@ -64,40 +68,36 @@ class IMGParser:
                     x = int(center_x - w / 2)
                     y = int(center_y - h / 2)
 
-                    boxes.append([x, y, w, h])
+                    boxes.append([x, y, x + w, y + h, confidence])  # SORT는 (x1, y1, x2, y2, confidence) 형식을 사용
                     confidences.append(float(confidence))
                     class_ids.append(class_id)
 
         indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-        car_detected = False  # 'car' 탐지 여부를 추적하는 변수
 
-        detected_classes = []
-        for i in range(len(boxes)):
-            if i in indexes:
-                label = str(self.classes[class_ids[i]])
-                if label == "car":  # 'car' 클래스가 탐지되었을 경우
-                    car_detected = True  # 'car' 탐지 여부 업데이트
-                    detected_classes.append(label)
-                    # 바운딩 박스 좌표를 Float32MultiArray로 변환하여 송신
-                    bbox_data = Float32MultiArray(data=[boxes[i][0], boxes[i][1], boxes[i][2], boxes[i][3]])
+        # SORT로 객체 추적 (바운딩 박스 좌표 전달)
+        if len(boxes) > 0:
+            tracked_objects = self.sort_tracker.update(np.array(boxes))
+
+            detected_classes = []
+            for obj in tracked_objects:
+                x1, y1, x2, y2, track_id = obj.astype(int)
+                if class_ids[track_id] == self.classes.index('car'):
+                    detected_classes.append("car")
+                    # 바운딩 박스 좌표와 ID를 Float32MultiArray로 변환하여 송신
+                    bbox_data = Float32MultiArray(data=[x1, y1, x2 - x1, y2 - y1, track_id])
                     self.bbox_pub.publish(bbox_data)
 
-        # 'car'가 탐지되지 않았을 경우, 기본 빈 바운딩 박스 데이터를 퍼블리시
-        if not car_detected:
-            # 빈 바운딩 박스 값 (0, 0, 0, 0) 또는 다른 기본값
-            empty_bbox_data = Float32MultiArray(data=[0, 0, 0, 0])
-            self.bbox_pub.publish(empty_bbox_data)
 
-        if detected_classes:
-            print("Detected classes:", detected_classes)
-        else:
-            print("Not Detected")
+            if detected_classes:
+                print("Detected classes:", detected_classes)
+            else:
+                print("Not Detected")
 
 
 if __name__ == '__main__':
     try:
         img_parser = IMGParser()
-        rate = rospy.Rate(10)  # 1Hz로 루프 실행
+        rate = rospy.Rate(10)  # 10Hz로 루프 실행
         while not rospy.is_shutdown():
             img_parser.process_image()  # 이미지 처리 함수 호출
             rate.sleep()  # 주기 제어
