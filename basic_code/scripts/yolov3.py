@@ -6,13 +6,13 @@ import cv2
 import numpy as np
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Float32MultiArray
-from sort import Sort  # SORT 모듈 가져오기
+from sort import Sort  # You need to install SORT and import it
 
 class IMGParser:
     def __init__(self):
         rospy.init_node('image_parser', anonymous=True)
         self.image_sub = rospy.Subscriber("/image_jpeg/compressed", CompressedImage, self.callback)
-        self.bbox_pub = rospy.Publisher("/car_bounding_boxes", Float32MultiArray, queue_size=1)
+        self.bbox_pub = rospy.Publisher("/object_bounding_boxes", Float32MultiArray, queue_size=1)
 
         # YOLO 설정
         self.net = cv2.dnn.readNet("/home/jeomyo/catkin_ws/src/basic_code/scripts/yolov3.weights",
@@ -28,8 +28,8 @@ class IMGParser:
         self.latest_image = None
         self.processing = False  # 처리 중인지 확인하는 플래그
 
-        # SORT 트래커 초기화
-        self.sort_tracker = Sort()
+        # Initialize SORT tracker
+        self.tracker = Sort(max_age=50, min_hits=3, iou_threshold=0.6)
 
     def callback(self, msg):
         if not self.processing:  # 처리 중이 아닐 때만 새로운 이미지를 받음
@@ -46,13 +46,14 @@ class IMGParser:
 
     def detect_objects(self, img):
         height, width, _ = img.shape
-        blob = cv2.dnn.blobFromImage(img, 0.00392, (320, 320), (0, 0, 0), True, crop=False)
+        blob = cv2.dnn.blobFromImage(img, 0.00392, (480, 480), (0, 0, 0), True, crop=False)
         self.net.setInput(blob)
         outputs = self.net.forward(self.output_layers)
 
         boxes = []
         confidences = []
         class_ids = []
+        object_labels = []  # 객체 클래스 이름 저장용
 
         for output in outputs:
             for detection in output:
@@ -68,36 +69,48 @@ class IMGParser:
                     x = int(center_x - w / 2)
                     y = int(center_y - h / 2)
 
-                    boxes.append([x, y, x + w, y + h, confidence])  # SORT는 (x1, y1, x2, y2, confidence) 형식을 사용
+                    boxes.append([x, y, w, h, confidence])
                     confidences.append(float(confidence))
                     class_ids.append(class_id)
+                    object_labels.append(self.classes[class_id])  # 클래스 이름 저장
 
         indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+        object_boxes = []
+        filtered_labels = []  # 객체 라벨 저장 리스트
 
-        # SORT로 객체 추적 (바운딩 박스 좌표 전달)
-        if len(boxes) > 0:
-            tracked_objects = self.sort_tracker.update(np.array(boxes))
+        for i in range(len(boxes)):
+            if i in indexes:
+                label = str(self.classes[class_ids[i]])
+                if label == "car" or label == "person":  # 'car' 또는 'person' 클래스만 추적
+                    x, y, w, h, conf = boxes[i]
+                    object_boxes.append([x, y, x + w, y + h, conf])  # x1, y1, x2, y2 형식으로
+                    filtered_labels.append(label)  # 클래스 라벨을 추적에 맞게 저장
 
-            detected_classes = []
-            for obj in tracked_objects:
-                x1, y1, x2, y2, track_id = obj.astype(int)
-                if class_ids[track_id] == self.classes.index('car'):
-                    detected_classes.append("car")
-                    # 바운딩 박스 좌표와 ID를 Float32MultiArray로 변환하여 송신
-                    bbox_data = Float32MultiArray(data=[x1, y1, x2 - x1, y2 - y1, track_id])
-                    self.bbox_pub.publish(bbox_data)
+        # SORT로 트래킹을 업데이트
+        tracked_objects = self.tracker.update(np.array(object_boxes))
 
+    
+        for idx, track in enumerate(tracked_objects):
+            x1, y1, x2, y2, track_id = track
+            label = filtered_labels[idx]  # 객체 라벨과 트랙 ID를 매칭
+            bbox_data = Float32MultiArray(data=[x1, y1, x2 - x1, y2 - y1, track_id])
+            self.bbox_pub.publish(bbox_data)  # 트래킹 ID와 함께 박스 송신
 
-            if detected_classes:
-                print("Detected classes:", detected_classes)
-            else:
-                print("Not Detected")
+            # 객체 클래스 이름과 트랙 ID 출력
+            print(f"Detected: {label}, Track ID: {int(track_id)}")
 
+        if len(tracked_objects) == 0:
+            print("No objects detected")
+
+        if filtered_labels:
+            print("Detected classes:", filtered_labels)
+
+        
 
 if __name__ == '__main__':
     try:
         img_parser = IMGParser()
-        rate = rospy.Rate(10)  # 10Hz로 루프 실행
+        rate = rospy.Rate(50)  # 1Hz로 루프 실행
         while not rospy.is_shutdown():
             img_parser.process_image()  # 이미지 처리 함수 호출
             rate.sleep()  # 주기 제어
