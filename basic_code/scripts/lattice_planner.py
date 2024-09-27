@@ -39,7 +39,7 @@ class latticePlanner:
                 if self.is_obj:
                     if self.check_collision(self.local_path, self.object_data):
                         lattice_path = self.latticePlanner(self.local_path)
-                        lattice_path_index = self.collision_check(self.object_data, lattice_path)
+                        lattice_path_index = self.collision_check(self.local_path, self.object_data, lattice_path)
                         # lattice 경로 메시지 Publish
                         print(lattice_path_index)
                         self.lattice_path_pub.publish(lattice_path[lattice_path_index])
@@ -64,16 +64,51 @@ class latticePlanner:
                     break
         return is_crash
 
-    def collision_check(self, object_data, out_path):
+    def collision_check(self, local_path, object_data, out_path):
         selected_lane = -1
-        lane_weight = [6, 5, 4 ,3, 2, 1, 0, 1, 2, 3, 4 ,5, 6]  # 경로별 가중치
+        point_num = 10
+        lane_weight = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # 경로별 가중치
+        r_values = []  # r 값을 저장할 리스트
+
+        if len(local_path.poses) > point_num * 2:
+            for i in range(point_num, len(local_path.poses) - point_num):
+                x_list = []
+                y_list = []
+                for box in range(-point_num, point_num):
+                    x = local_path.poses[i + box].pose.position.x
+                    y = local_path.poses[i + box].pose.position.y
+                    x_list.append([-2 * x, -2 * y, 1])
+                    y_list.append((-x * x) - (y * y))
+
+                # 최소 자승법을 이용한 곡률 반지름 계산
+                A = np.array(x_list)
+                B = np.array(y_list)
+                a, b, c = np.dot(np.linalg.pinv(A), B)
+
+                r = (a ** 2 + b ** 2 - c) ** 0.5
+                r_values.append(r)  # r 값을 리스트에 추가
+
+            # r 값 중 최솟값을 구함
+            min_r = r_values[1]
+            print(f"Minimum r: {min_r}")
+
+            # 최솟값을 사용하여 비교
+            if  min_r < 100:
+                print("Minimum r < 13, adjusting lane weights")
+
+
+                lane_weight[16] = 0
+                lane_weight[16] = 1  # 가장 오른쪽 경로 가중치 최소화
+                lane_weight[17] = 2  # 오른쪽 두 번째 경로 가중치 최소화
+                lane_weight[18] = 3
 
         for point in object_data.points:
             for path_num in range(len(out_path)):
                 for path_pos in out_path[path_num].poses:
                     dis = sqrt(pow(point.x - path_pos.pose.position.x, 2) + pow(point.y - path_pos.pose.position.y, 2))
-                    if dis < 2:   
+                    if dis < 1.45:   
                         lane_weight[path_num] += 100
+                 
 
         if self.lane_pos == "Right":
             # 왼쪽에 노란 차선이 있는 경우 왼쪽 경로에 높은 가중치 부여
@@ -83,16 +118,22 @@ class latticePlanner:
             lane_weight[3] += 1000
             lane_weight[4] += 1000
             lane_weight[5] += 1000
+            lane_weight[6] += 1000
+            lane_weight[7] += 1000
+            lane_weight[8] += 1000
 
 
         elif self.lane_pos == "Left":
-            # 오른쪽에 노란 차선이 있는 경우 오른쪽 경로에 높은 가중치 부여  
-            lane_weight[7] += 1000
-            lane_weight[8] += 1000
-            lane_weight[9] += 1000
+            # 오른쪽에 노란 차선이 있는 경우 오른쪽 경로에 높은 가중치 부여  0
             lane_weight[10] += 1000
             lane_weight[11] += 1000
             lane_weight[12] += 1000
+            lane_weight[13] += 1000
+            lane_weight[14] += 1000
+            lane_weight[15] += 1000
+            lane_weight[16] += 1000
+            lane_weight[17] += 1000
+            lane_weight[18] += 1000
 
         for i in range(len(lane_weight)):
             print(f"{i}: {lane_weight[i]}")
@@ -100,6 +141,7 @@ class latticePlanner:
 
         selected_lane = lane_weight.index(min(lane_weight))
         return selected_lane
+
 
     def path_callback(self, msg):
         self.is_path = True
@@ -156,7 +198,8 @@ class latticePlanner:
             local_end_point = det_trans_matrix.dot(world_end_point)
             world_ego_vehicle_position = np.array([[vehicle_pose_x], [vehicle_pose_y], [1]])
             local_ego_vehicle_position = det_trans_matrix.dot(world_ego_vehicle_position)
-            lane_off_set = [-10 ,-8, -5,-4, -3, -2, 0, 2, 3, 4, 5, 8, 10]
+            
+            lane_off_set = [-18, -16, -14.5, -10 ,-6, -5, -4, -3, -2, 0, 2, 3, 4, 5, 6, 10, 14.5, 16, 18]
             local_lattice_points = []
             
             for i in range(len(lane_off_set)):
@@ -184,6 +227,7 @@ class latticePlanner:
                 c = 0
                 b = 3 * (y_end - y_start) / x_end**2
                 a = -2 * (y_end - y_start) / x_end**3
+                
 
                 for x in waypoints_x:
                     result = a * x**3 + b * x**2 + c * x + d
