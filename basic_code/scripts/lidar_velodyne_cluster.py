@@ -43,12 +43,12 @@ class SCANCluster:
 
         # PointCloud2 메시지를 numpy 배열로 변환
         for point in pc2.read_points(cloud_msg, skip_nans=True):
-            if point[0] > 0 and point[2] > -1.3 and point[2] < 2:
+            if point[0] > -4 and point[2] > -1.3 and point[2] < 2:
                 point_list.append((point[0], point[1], point[2]))
 
             # 위험 영역 확인
             dist = np.sqrt(point[0]**2 + point[1]**2 + point[2]**2)
-            if point[0] > 0 and point[1] > -2 and point[1] < 2 and point[2] > -1.3 and dist < 4:
+            if point[0] > -2.5 and point[1] > -2 and point[1] < 2 and point[2] > -1.3 and dist < 4:
                 dangerous_list.append((point[0], point[1], point[2], dist))
                 stop_flag = True  # 위험한 물체가 있으면 정지 신호 설정
     
