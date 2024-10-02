@@ -22,7 +22,6 @@ class latticePlanner:
         rospy.Subscriber("/odom", Odometry, self.odom_callback)  # Odom에서 위치 정보 수신
         rospy.Subscriber("/Competition_topic", EgoVehicleStatus, self.status_callback)  # 속도만 받음
         rospy.Subscriber("/right_path", Path, self.right_path_callback)  # 우측 경로 받아옴
-        rospy.Subscriber("/left_path", Path, self.left_path_callback)  # 좌측 경로 받아옴
 
         self.lattice_path_pub = rospy.Publisher("/lattice_path", Path, queue_size=1)
 
@@ -31,22 +30,20 @@ class latticePlanner:
         self.is_odom = False  # odom flag 추가
         self.is_obj = False
         self.is_right_path = False
-        self.is_left_path = False
         self.local_path = None
         self.object_data = None
         self.lane_pos = None
         self.right_path = None  # 우측 경로 Path 데이터
-        self.left_path = None   # 좌측 경로 Path 데이터
         
 
-        rate = rospy.Rate(30)  # 30hz
+        rate = rospy.Rate(50)  # 30hz
         while not rospy.is_shutdown():
-            if self.is_path and self.is_status and self.is_odom and self.is_right_path and self.is_left_path:
-                # 객체가 없어도 좌우 경로 충돌 여부 확인
-                collision_detected = self.check_collision(self.local_path, self.object_data if self.is_obj else None)
-                if collision_detected:
+            if self.is_path and self.is_status and self.is_odom and self.is_right_path:
+                # 객체가 없어도 우측 경로 충돌 여부 확인
+                is_crash, right_crash = self.check_collision(self.local_path, self.object_data if self.is_obj else None)
+                if is_crash or right_crash:
                     lattice_path = self.latticePlanner(self.local_path)
-                    lattice_path_index = self.collision_check(self.object_data, lattice_path)
+                    lattice_path_index = self.collision_check(self.object_data, lattice_path, right_crash)
                     print(lattice_path_index)
                     self.lattice_path_pub.publish(lattice_path[lattice_path_index])
                 else:
@@ -59,43 +56,33 @@ class latticePlanner:
 
     def check_collision(self, ref_path, object_data):
         is_crash = False
+        right_crash = False  # 우측 경계 충돌 여부를 따로 관리
         # 차량 위치 정보 가져오기
         vehicle_x = self.vehicle_pos_x
         vehicle_y = self.vehicle_pos_y
-
-
-        filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
-        # 우측 경계와의 충돌 검사
-        for path in filtered_right_path.poses:
-            dis_right = sqrt((vehicle_x - path.pose.position.x)**2 +
-                            (vehicle_y - path.pose.position.y)**2)
-            if dis_right < 1.0:  # 충돌 판단 거리
-                is_crash = True
-                print("right crash!")
-                break
-
-
-        filtered_left_path = self.filter_path_by_distance(self.left_path, 30)
-        # 좌측 경계와의 충돌 검사
-        for path in filtered_left_path.poses:
-            dis_left = sqrt((vehicle_x - path.pose.position.x)**2 +
-                            (vehicle_y - path.pose.position.y)**2)
-            if dis_left < 1.0:  # 충돌 판단 거리
-                is_crash = True
-                print("left crash!")
-                break
 
         # 객체와의 충돌 검사
         for point in object_data.points:
             for path in ref_path.poses:
                 dis = sqrt((path.pose.position.x - point.x)**2 + (path.pose.position.y - point.y)**2)
-                if dis < 2.4:  # 충돌 판단 거리 설정
+                if dis < 2.6:  # 충돌 판단 거리 설정
                     is_crash = True
                     break
             if is_crash:  # 충돌이 발생하면 더 이상 확인할 필요가 없으므로 break
                 break
 
-        return is_crash
+        filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
+
+        # 우측 경계와의 충돌 검사
+        for path in filtered_right_path.poses:
+            dis_right = sqrt((vehicle_x - path.pose.position.x)**2 +
+                            (vehicle_y - path.pose.position.y)**2)
+            if dis_right < 1:  # 충돌 판단 거리
+                right_crash = True
+                print("right crash!")
+                break
+
+        return is_crash, right_crash
     
     def filter_path_by_distance(self, path, max_distance):
         """ 주어진 path에서 차량과 일정 거리 이내의 경로만 반환 """
@@ -112,64 +99,72 @@ class latticePlanner:
 
         return filtered_path
 
-    def collision_check(self, object_data, out_path):
+    def collision_check(self, object_data, out_path, right_crash):
         selected_lane = -1
-        lane_weight = [0] * len(out_path)
-        distance_list = []
-
-        vehicle_x = self.vehicle_pos_x
-        vehicle_y = self.vehicle_pos_y
-        vehicle_yaw = atan2(self.local_path.poses[1].pose.position.y - self.local_path.poses[0].pose.position.y,
-                            self.local_path.poses[1].pose.position.x - self.local_path.poses[0].pose.position.x)
-
-        line_slope = sin(vehicle_yaw) / cos(vehicle_yaw)
-        line_intercept = vehicle_y - line_slope * vehicle_x
-
-        # 필터링된 좌/우 경로를 사용하여 충돌 검사 및 가중치 계산
-        filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
-        filtered_left_path = self.filter_path_by_distance(self.left_path, 30)
-
-        for path_num in range(len(out_path)):
-            path_length = len(out_path[path_num].poses)
-
-            if path_length < 10:
-                rospy.logwarn(f"Path {path_num} has 0 length and will be ignored.")
-                continue
-
-            generated_pose = out_path[path_num].poses[10].pose.position
-            distance_to_line = abs(line_slope * generated_pose.x - generated_pose.y + line_intercept) / sqrt(line_slope ** 2 + 1)
-            distance_list.append((path_num, distance_to_line))
-
-        distance_list.sort(key=lambda x: x[1])
-
-        for rank, (path_num, distance) in enumerate(distance_list):
-            lane_weight[path_num] = rank
-
+        lane_weight = [6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6]
+        
+        # 객체와의 충돌 여부 체크 및 가중치 부여
         for point in object_data.points:
             for path_num in range(len(out_path)):
                 for path_pos in out_path[path_num].poses:
                     dis = sqrt(pow(point.x - path_pos.pose.position.x, 2) + pow(point.y - path_pos.pose.position.y, 2))
-                    if dis < 1.45:
+                    if dis < 1.4:
                         lane_weight[path_num] += 100
 
+        # 필터링된 우측 경로를 사용하여 충돌 검사 및 가중치 계산
+        filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
+
+        if len(filtered_right_path.poses) < 2:
+            print("Right path too short for comparison.")
+            return selected_lane  # 비교할 수 없으므로 함수를 종료
+
+        # 우측 경로에서 시작점과 중간점 추출
+        right_start = filtered_right_path.poses[0].pose.position
+        mid_index = len(filtered_right_path.poses) // 2
+        right_mid = filtered_right_path.poses[mid_index].pose.position
+
+        # 경로 이탈 체크
+        for path_num in range(len(out_path)):
+            min_right_dist = float('inf')  # min_right_dist를 무한대로 초기화하여 최소 거리를 찾을 수 있도록 설정
+            path_positions = np.array([[pose.pose.position.x, pose.pose.position.y] for pose in out_path[path_num].poses])
+            right_positions = np.array([[rp.pose.position.x, rp.pose.position.y] for rp in filtered_right_path.poses])
+    
+            # 거리 계산 (벡터 연산)
+            for path_pos in path_positions:
+                distances = np.sqrt(np.sum((right_positions - path_pos)**2, axis=1))
+                min_right_dist = np.min(distances)
+            
+            if min_right_dist < 0.5:
+                lane_weight[path_num] += 1000
+
+        # 각 회피 경로의 포즈마다 외적을 계산하고 가중치 부여
         for path_num in range(len(out_path)):
             for path_pos in out_path[path_num].poses:
-                min_right_dist = min([sqrt(pow(path_pos.pose.position.x - rp.pose.position.x, 2) +
-                                           pow(path_pos.pose.position.y - rp.pose.position.y, 2)) for rp in filtered_right_path.poses])
+                path_point = path_pos.pose.position
+                
+                # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
+                right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
+                path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
 
-                if min_right_dist < 1.0:
-                    lane_weight[path_num] += 1000
+                # 외적 값 계산
+                cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
 
-        for path_num in range(len(out_path)):
-            for path_pos in out_path[path_num].poses:
-                min_left_dist = min([sqrt(pow(path_pos.pose.position.x - lp.pose.position.x, 2) +
-                                          pow(path_pos.pose.position.y - lp.pose.position.y, 2)) for lp in filtered_left_path.poses])
+                if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
+                    lane_weight[path_num] += 500
 
-                if min_left_dist < 1.0:
-                    lane_weight[path_num] += 1000
+        if right_crash:
+            lane_weight[0] += 10000
+            lane_weight[1] += 10000
+            lane_weight[2] += 10000
+            lane_weight[3] += 10000
+            lane_weight[4] += 10000
+
+        for i in range(len(out_path)):
+            print(f"{i} : {lane_weight[i]}")
 
         selected_lane = lane_weight.index(min(lane_weight))
         return selected_lane
+
 
     def path_callback(self, msg):
         self.is_path = True
@@ -187,10 +182,6 @@ class latticePlanner:
     def right_path_callback(self, msg):
         self.right_path = msg
         self.is_right_path = True
-
-    def left_path_callback(self, msg):
-        self.left_path = msg
-        self.is_left_path = True
 
     def latticePlanner(self, ref_path):
         out_path = []
