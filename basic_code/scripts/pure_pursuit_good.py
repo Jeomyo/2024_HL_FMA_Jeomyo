@@ -94,7 +94,7 @@ class pure_pursuit :
         self.min_lfd = 10
         self.max_lfd = 30
         self.lfd_gain = 0.78
-        self.target_velocity = 40
+        self.target_velocity = 30
 
         self.pid = pidControl()
         self.vel_planning = velocityPlanning(self.target_velocity / 3.6, 0.15)
@@ -258,7 +258,7 @@ class pidControl:
         return output
 
 class velocityPlanning:
-    def __init__ (self,car_max_speed, road_friciton):
+    def __init__ (self, car_max_speed, road_friciton):
         self.car_max_speed = car_max_speed
         self.road_friction = road_friciton
 
