@@ -19,7 +19,7 @@ class SCANCluster:
 
         self.cluster_msg = PoseArray()
 
-        self.dbscan = DBSCAN(eps=0.5, min_samples=3)
+        self.dbscan = DBSCAN(eps=0.3, min_samples=3)
 
     def callback(self, msg):
         self.pc_np = self.pointcloud2_to_xyz(msg)
@@ -32,7 +32,7 @@ class SCANCluster:
 
         # PointCloud2 메시지를 numpy 배열로 변환
         for point in pc2.read_points(cloud_msg, skip_nans=True):
-            if point[0] > -4 and point[1] > -3  and point[1] < 3 and point[2] > -0.8 and point[2] < 2.7:
+            if point[0] > 0 and point[1] > -5 and point[1] < 5 and point[2] > -0.77 and point[2] < 2.7:
                 point_list.append((point[0], point[1], point[2]))
 
         point_np = np.array(point_list, np.float32)  # 리스트를 numpy 배열로 변환
