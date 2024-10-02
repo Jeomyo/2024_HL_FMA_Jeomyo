@@ -16,13 +16,10 @@ class Cluster_viz:
     def __init__(self):
 
         rospy.Subscriber("/clusters", PoseArray, self.callback)
-        rospy.Subscriber("/dangerous_clusters", PoseArray, self.dan_callback)
         rospy.Subscriber("/odom", Odometry, self.odom_callback)
-        rospy.Subscriber("/stop", Bool, self.stop_callback)
         rospy.Subscriber("/Competition_topic", EgoVehicleStatus, self.status_callback)
 
         self.object_pointcloud_pub = rospy.Publisher('object_pointcloud_data', PointCloud, queue_size=1)
-        self.dynamic_pub = rospy.Publisher('dynamic_status', Bool, queue_size=1)
 
 
         self.is_odom = False
@@ -30,21 +27,16 @@ class Cluster_viz:
         self.dangerous_status = False
         self.prev_dangerous_data = None
         self.cluster_data = None  # 초기화
-        self.dangerous_data = None  # 초기화
-        self.stop = False
 
-        self.dynamic_status = Bool()
-        self.dynamic_status.data = False
-
-        rate = rospy.Rate(30)  # 30hz
+        rate = rospy.Rate(50)  # 30hz
         while not rospy.is_shutdown():
             if self.is_odom and self.cluster_status:
                 
                 # (1) 좌표 변환 행렬 생성
                 trans_matrix = self.trans_matrix(self.vehicle_yaw)
 
-                
                 obj_data_cluster = self.tf_global(trans_matrix, self.cluster_data)
+
                 self.object_pointcloud_pub.publish(obj_data_cluster)
 
             rate.sleep()
@@ -81,20 +73,6 @@ class Cluster_viz:
 
         return obj_data
 
-    def check_if_dynamic(self, current_data, prev_data, threshold=0.2):
-        for i, current_point in enumerate(current_data.points):
-            prev_point = prev_data.points[i]
-
-            dist = np.sqrt((current_point.x - prev_point.x) ** 2 +
-                           (current_point.y - prev_point.y) ** 2)
-
-            print(dist)               
-
-            if dist > threshold:  # threshold 값을 기준으로 좌표 변화를 체크
-                return True  # 동적인 물체
-
-        return False  # 정적인 물체
-
     def callback(self, msg):    
         self.cluster_data = msg
         self.cluster_status = True
@@ -102,33 +80,6 @@ class Cluster_viz:
     def status_callback(self, msg):  # 속도만 처리
         self.is_status = True
         self.vehicle_velocity = msg.velocity.x * 3.6  # 속도를 km/h로 변환
-
-    def dan_callback(self, msg):   
-        self.dangerous_status = True 
-        self.dangerous_data = msg 
-
-        if self.vehicle_velocity < 0.01:
-            trans_matrix = self.trans_matrix(self.vehicle_yaw)
-
-            # (2) dangerous_data를 전역 좌표로 변환
-            global_dangerous_data = self.tf_global(trans_matrix, self.dangerous_data)
-
-            # (3) 이전 dangerous_data가 있으면 좌표 변화 체크
-            if self.prev_dangerous_data is not None:
-                self.dynamic_status.data = self.check_if_dynamic(global_dangerous_data, self.prev_dangerous_data)
-                self.dynamic_pub.publish(self.dynamic_status)
-
-            # 현재 dangerous_data를 prev_dangerous_data로 저장
-            self.prev_dangerous_data = global_dangerous_data
-
-
-    def stop_callback(self, msg):
-        self.stop = msg.data
-
-        if self.stop == False:
-            self.prev_dangerous_data = None
-            self.dangerous_status = False  # 위험 상태 해제
-
 
     def odom_callback(self, msg):
         self.is_odom = True
