@@ -29,7 +29,7 @@ class GPSIMUParser:
         self.odom_msg.header.frame_id='/odom'
         self.odom_msg.child_frame_id='/base_link'
 
-        rate = rospy.Rate(10)
+        rate = rospy.Rate(50)
         while not rospy.is_shutdown():
             os.system('clear')
             if self.is_imu==True and self.is_gps == True:
