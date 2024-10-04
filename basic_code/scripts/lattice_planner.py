@@ -7,7 +7,7 @@ from sensor_msgs.msg import PointCloud
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path, Odometry  # Odometry 추가
 from morai_msgs.msg import EgoVehicleStatus
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, Bool
 import numpy as np
 
 class latticePlanner:
@@ -22,8 +22,11 @@ class latticePlanner:
         rospy.Subscriber("/odom", Odometry, self.odom_callback)  # Odom에서 위치 정보 수신
         rospy.Subscriber("/Competition_topic", EgoVehicleStatus, self.status_callback)  # 속도만 받음
         rospy.Subscriber("/right_path", Path, self.right_path_callback)  # 우측 경로 받아옴
+        rospy.Subscriber("/cluster_distances", Float32MultiArray, self.distance_callback)
+
 
         self.lattice_path_pub = rospy.Publisher("/lattice_path", Path, queue_size=1)
+        self.speed_pub = rospy.Publisher("/speed_control", Bool, queue_size=1)
 
         self.is_path = False
         self.is_status = False
@@ -34,6 +37,8 @@ class latticePlanner:
         self.object_data = None
         self.lane_pos = None
         self.right_path = None  # 우측 경로 Path 데이터
+        self.is_distance = False  # 거리 데이터 수신 여부 플래그
+        self.distances = None  # 거리 데이터를 저장할 변수
         
 
         rate = rospy.Rate(50)  # 30hz
@@ -46,9 +51,16 @@ class latticePlanner:
                     lattice_path_index = self.collision_check(self.object_data, lattice_path, right_crash)
                     print(lattice_path_index)
                     self.lattice_path_pub.publish(lattice_path[lattice_path_index])
+                    self.publish_speed_bool(True)
                 else:
                     self.lattice_path_pub.publish(self.local_path)
+                    self.publish_speed_bool(False)
             rate.sleep()
+
+    def publish_speed_bool(self, bool_value):
+        speed_bool_msg = Bool()
+        speed_bool_msg.data = bool_value
+        self.speed_pub.publish(speed_bool_msg)  # speed_bool 퍼블리시
 
     def object_callback(self, msg):
         self.is_obj = True
@@ -65,11 +77,19 @@ class latticePlanner:
         for point in object_data.points:
             for path in ref_path.poses:
                 dis = sqrt((path.pose.position.x - point.x)**2 + (path.pose.position.y - point.y)**2)
-                if dis < 2.6:  # 충돌 판단 거리 설정
+                if dis < 2.7:  # 충돌 판단 거리 설정
                     is_crash = True
                     break
             if is_crash:  # 충돌이 발생하면 더 이상 확인할 필요가 없으므로 break
                 break
+
+        # 거리 값 리스트에서 충돌 여부 판단 (distance_callback을 통해 수신된 거리 값 사용)
+        if self.is_distance and self.distances is not None:
+            for i, diss in enumerate(self.distances):
+                if diss < 2.7:  # 충돌 판단 거리 설정
+                    is_crash = True
+                    print(f"충돌 위험! 객체와의 거리: {diss}")
+                    break
 
         filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
 
@@ -101,14 +121,14 @@ class latticePlanner:
 
     def collision_check(self, object_data, out_path, right_crash):
         selected_lane = -1
-        lane_weight = [6, 5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5, 6]
+        lane_weight = [112, 11, 10, 9, 8, 7, 6, 0, 1, 2, 3, 4, 5, 6, 107]
         
         # 객체와의 충돌 여부 체크 및 가중치 부여
         for point in object_data.points:
             for path_num in range(len(out_path)):
                 for path_pos in out_path[path_num].poses:
                     dis = sqrt(pow(point.x - path_pos.pose.position.x, 2) + pow(point.y - path_pos.pose.position.y, 2))
-                    if dis < 1.4:
+                    if dis < 1.45:
                         lane_weight[path_num] += 100
 
         # 필터링된 우측 경로를 사용하여 충돌 검사 및 가중치 계산
@@ -135,22 +155,23 @@ class latticePlanner:
                 min_right_dist = np.min(distances)
             
             if min_right_dist < 0.5:
-                lane_weight[path_num] += 1000
+                lane_weight[path_num] += 100
 
         # 각 회피 경로의 포즈마다 외적을 계산하고 가중치 부여
         for path_num in range(len(out_path)):
-            for path_pos in out_path[path_num].poses:
-                path_point = path_pos.pose.position
-                
-                # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
-                right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
-                path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
+            if path_num in [0, 1, 2, 3, 4]:  # path_num이 0, 1, 2일 때만 계산
+                for path_pos in out_path[path_num].poses:
+                    path_point = path_pos.pose.position
 
-                # 외적 값 계산
-                cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
+                    # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
+                    right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
+                    path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
 
-                if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
-                    lane_weight[path_num] += 500
+                    # 외적 값 계산
+                    cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
+
+                    if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
+                        lane_weight[path_num] += 100
 
         if right_crash:
             lane_weight[0] += 10000
@@ -158,13 +179,18 @@ class latticePlanner:
             lane_weight[2] += 10000
             lane_weight[3] += 10000
             lane_weight[4] += 10000
+            lane_weight[5] += 10000
+            
 
         for i in range(len(out_path)):
             print(f"{i} : {lane_weight[i]}")
 
         selected_lane = lane_weight.index(min(lane_weight))
         return selected_lane
-
+    
+    def distance_callback(self, msg):
+        self.is_distance = True
+        self.distances = msg.data  # 거리 데이터를 Float32MultiArray로 저장
 
     def path_callback(self, msg):
         self.is_path = True
@@ -222,7 +248,7 @@ class latticePlanner:
             local_end_point = det_trans_matrix.dot(world_end_point)
             world_ego_vehicle_position = np.array([[vehicle_pose_x], [vehicle_pose_y], [1]])
             local_ego_vehicle_position = det_trans_matrix.dot(world_ego_vehicle_position)   
-            lane_off_set = [-10, -8, -5, -4, -3, -2, 0, 2, 3, 4, 5, 8, 10]
+            lane_off_set = [-13, -10 ,-8, -5, -4, -3, -2, 0, 2, 3, 4, 5, 8, 10, 13]
             local_lattice_points = []
             
             for i in range(len(lane_off_set)):
