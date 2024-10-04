@@ -21,6 +21,13 @@ class SCANCluster:
         self.pc_np = None
         self.dbscan = DBSCAN(eps=0.3, min_samples=3)  # DBSCAN 클러스터링 파라미터 설정
 
+        # 50Hz 주기 설정
+        rate = rospy.Rate(30)  # 50Hz 설정
+        while not rospy.is_shutdown():
+            # 콜백 함수가 데이터를 수신하고 처리할 수 있도록 spin 호출
+            rate.sleep()
+
+    
     def callback(self, msg):
         # PointCloud2 데이터를 numpy 배열로 변환
         self.pc_np = self.pointcloud2_to_xyz(msg)
@@ -43,7 +50,7 @@ class SCANCluster:
         for point in pc2.read_points(cloud_msg, skip_nans=True):
             dist = (point[0]**2 + point[1]**2)**0.5  # 거리 계산
             # 조건에 맞는 포인트만 저장 (필터링)
-            if point[0] > 0 and point[1] > -6 and point[1] < 6 and point[2] > -0.8 and point[2] < 2.7 and dist < 50:
+            if point[0] > 0 and point[1] > -6 and point[1] < 6 and point[2] > -0.78 and point[2] < 3 and dist < 60:
                 point_list.append((point[0], point[1], dist))  # (x, y, 거리)
 
         point_np = np.array(point_list, np.float32)  # 리스트를 numpy 배열로 변환
