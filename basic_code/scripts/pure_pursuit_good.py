@@ -21,6 +21,8 @@ import numpy as np
 import tf
 from tf.transformations import euler_from_quaternion, quaternion_from_euler
 from enum import Enum
+from std_msgs.msg import Bool
+
 
 
 # 노드 실행 순서 
@@ -67,7 +69,6 @@ class pure_pursuit :
         rospy.Subscriber("is_dynamic", Bool, self.is_dynamic_callback)
         rospy.Subscriber("/speed_control", Bool, self.speed_callback)  # Bool 값 구독
 
-
         rospy.wait_for_service('/Service_MoraiEventCmd', timeout= 5)
         self.event_cmd_srv = rospy.ServiceProxy('Service_MoraiEventCmd', MoraiEventCmdSrv)
 
@@ -77,12 +78,15 @@ class pure_pursuit :
         self.ctrl_cmd_msg = CtrlCmd()
         self.event_cmd = EventInfo()
         
+        self.dist_left = float('inf') # 추가
+        self.dist_right = float('inf') # 추가
         self.ctrl_cmd_msg.longlCmdType = 1
 
         self.is_path = False
         self.is_odom = False
         self.is_status = False
         self.is_global_path = False
+        self.is_obstacle = False  # 장애물 감지 여부, 추가
 
         self.is_look_forward_point = False
         self.stop = False
@@ -159,10 +163,9 @@ class pure_pursuit :
                 
             rate.sleep()
 
-
     def path_callback(self,msg):
         self.is_path=True
-        self.path=msg  
+        self.path=msg
 
     def odom_callback(self, msg):
         self.is_odom=True
