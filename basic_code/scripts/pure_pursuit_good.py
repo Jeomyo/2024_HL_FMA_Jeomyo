@@ -67,13 +67,6 @@ class pure_pursuit :
         rospy.Subscriber("is_dynamic", Bool, self.is_dynamic_callback)
         rospy.Subscriber("/speed_control", Bool, self.speed_callback)  # Bool 값 구독
 
-        rospy.Subscriber('/CollisionData', CollisionData, self.collision_callback)
-        self.is_collision_data = False
-        self.is_collision = False
-        detect_collision = False
-
-        rospy.Subscriber("/traffic_light_state", Bool, self.is_red_callback)
-        self.is_red = False
 
         rospy.wait_for_service('/Service_MoraiEventCmd', timeout= 5)
         self.event_cmd_srv = rospy.ServiceProxy('Service_MoraiEventCmd', MoraiEventCmdSrv)
@@ -119,7 +112,7 @@ class pure_pursuit :
                 break
             else:
                 rospy.loginfo("not")
-
+    
         rate = rospy.Rate(50) # 30hz
         while not rospy.is_shutdown():
 
@@ -133,7 +126,7 @@ class pure_pursuit :
                 else:
                     self.car_max_speed = 40
 
-                self.target_velocity = self.velocity_list[self.current_waypoint] * 3.6
+                self.target_velocity = min(self.car_max_speed, self.velocity_list[self.current_waypoint] * 3.6)
                         
                 #  횡방향 제어 - steering = theta = calc_pure_pursuit
                 steering = self.calc_pure_pursuit()
@@ -161,7 +154,7 @@ class pure_pursuit :
                 os.system('clear')
                 print("-------------------------------------")
                 print(" steering (deg) = ", self.ctrl_cmd_msg.steering * 180/pi)
-                print(" velocity (kph) = ", output)
+                print(" velocity (kph) = ", self.target_velocity)
                 print("-------------------------------------") 
                 
             rate.sleep()
@@ -187,7 +180,7 @@ class pure_pursuit :
         self.global_path = msg
 
     def speed_callback(self, msg):
-        self.speed_bool = msg.data
+        self.speed_control = msg.data
 
     def dynamic_callback(self, msg):
         self.dynamic = msg.data  
