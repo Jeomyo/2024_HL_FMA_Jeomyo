@@ -62,8 +62,18 @@ class pure_pursuit :
         rospy.Subscriber("/lattice_path", Path, self.path_callback)     # L58로 대체
         rospy.Subscriber("/odom", Odometry, self.odom_callback)
         rospy.Subscriber("/Competition_topic", EgoVehicleStatus, self.status_callback)
-        rospy.Subscriber("/stop", Bool, self.stop_callback)
         rospy.Subscriber("/dynamic_status", Bool, self.dynamic_callback)
+        
+        rospy.Subscriber("is_dynamic", Bool, self.is_dynamic_callback)
+        rospy.Subscriber("/speed_control", Bool, self.speed_callback)  # Bool 값 구독
+
+        rospy.Subscriber('/CollisionData', CollisionData, self.collision_callback)
+        self.is_collision_data = False
+        self.is_collision = False
+        detect_collision = False
+
+        rospy.Subscriber("/traffic_light_state", Bool, self.is_red_callback)
+        self.is_red = False
 
         rospy.wait_for_service('/Service_MoraiEventCmd', timeout= 5)
         self.event_cmd_srv = rospy.ServiceProxy('Service_MoraiEventCmd', MoraiEventCmdSrv)
@@ -83,7 +93,8 @@ class pure_pursuit :
 
         self.is_look_forward_point = False
         self.stop = False
-        self.dynamic = False
+        self.is_dynamic = False
+        self.speed_control = False 
 
         self.forward_point = Point()
         self.current_postion = Point()
@@ -94,10 +105,13 @@ class pure_pursuit :
         self.min_lfd = 10
         self.max_lfd = 30
         self.lfd_gain = 0.78
-        self.target_velocity = 30
+        self.target_velocity = 40
+
+        # 초기 car_max_speed 설정
+        self.car_max_speed = 40  # 기본값 40으로 설정
 
         self.pid = pidControl()
-        self.vel_planning = velocityPlanning(self.target_velocity / 3.6, 0.15)
+        self.vel_planning = velocityPlanning(self.car_max_speed / 3.6, 0.15)
 
         while True:
             if self.is_global_path == True:
@@ -106,12 +120,19 @@ class pure_pursuit :
             else:
                 rospy.loginfo("not")
 
-        rate = rospy.Rate(30) # 30hz
+        rate = rospy.Rate(50) # 30hz
         while not rospy.is_shutdown():
 
-            if self.is_path and self.is_odom and self.is_status:
+            if self.is_path and self.is_odom and self.is_status and self.is_dynamic==False:
                
                 self.current_waypoint = self.get_current_waypoint(self.current_postion, self.global_path)
+
+                # speed_bool에 따른 target_velocity 설정
+                if self.speed_control:
+                    self.car_max_speed = 25
+                else:
+                    self.car_max_speed = 40
+
                 self.target_velocity = self.velocity_list[self.current_waypoint] * 3.6
                         
                 #  횡방향 제어 - steering = theta = calc_pure_pursuit
@@ -165,8 +186,8 @@ class pure_pursuit :
         self.is_global_path = True
         self.global_path = msg
 
-    def stop_callback(self, msg):
-        self.stop = msg.data
+    def speed_callback(self, msg):
+        self.speed_bool = msg.data
 
     def dynamic_callback(self, msg):
         self.dynamic = msg.data  
@@ -231,6 +252,17 @@ class pure_pursuit :
         steering = atan2(2 * self.vehicle_length * sin(theta), self.lfd)
 
         return steering
+    
+    def is_dynamic_callback(self, msg) :
+        self.is_dynamic = msg.data
+        print("is_dynamic = ", self.is_dynamic)    
+        print("is_dynamic = ", self.is_dynamic)    
+        print("is_dynamic = ", self.is_dynamic)    
+        print("is_dynamic = ", self.is_dynamic)    
+        print("is_dynamic = ", self.is_dynamic) 
+        self.ctrl_cmd_msg.brake=1.0
+        self.ctrl_cmd_pub.publish(self.ctrl_cmd_msg)
+
 
 class pidControl:
     def __init__(self):
