@@ -60,7 +60,7 @@ class Cluster_viz:
         for num, i in enumerate(cluster_data.poses):
 
             # (2) 전역 좌표로 변환
-            local_result = [i.position.x, i.position.y, 1]
+            local_result = [i.position.x + 3, i.position.y, 1]
             temp = trans_matrix.dot(local_result)
             global_result = [temp[0] + vehicle_pos_x, temp[1] + vehicle_pos_y]
 
@@ -68,7 +68,7 @@ class Cluster_viz:
             tmp_point = Point32()
             tmp_point.x = global_result[0]
             tmp_point.y = global_result[1]
-            tmp_point.z = 1.0  # 필요에 따라 수정 가능
+            tmp_point.z = 1  # 필요에 따라 수정 가능
             obj_data.points.append(tmp_point)
 
         return obj_data
