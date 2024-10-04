@@ -86,12 +86,12 @@ class latticePlanner:
         # 거리 값 리스트에서 충돌 여부 판단 (distance_callback을 통해 수신된 거리 값 사용)
         if self.is_distance and self.distances is not None:
             for i, diss in enumerate(self.distances):
-                if diss < 2.7:  # 충돌 판단 거리 설정
+                if diss < 4.5:  # 충돌 판단 거리 설정
                     is_crash = True
                     print(f"충돌 위험! 객체와의 거리: {diss}")
                     break
 
-        filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
+        filtered_right_path, lane_position = self.filter_path_by_distance(self.right_path, 30)
 
         # 우측 경계와의 충돌 검사
         for path in filtered_right_path.poses:
@@ -104,24 +104,59 @@ class latticePlanner:
 
         return is_crash, right_crash
     
+    def rectangle(self, x, y, rect):
+        def cross_product(x1, y1, x2, y2):
+            return x1 * y2 - y1 * x2
+
+        point = np.array([x, y])
+
+        for i in range(4):
+            p1 = np.array(rect[i])
+            p2 = np.array(rect[(i+1) % 4])
+
+            edge = p2 - p1
+            vec_to_point = point - p1
+
+            if cross_product(edge[0], edge[1], vec_to_point[0], vec_to_point[1]) < 0:
+                return False
+        return True
+    
     def filter_path_by_distance(self, path, max_distance):
         """ 주어진 path에서 차량과 일정 거리 이내의 경로만 반환 """
         filtered_path = Path()
         filtered_path.header = path.header
 
-        for pose in path.poses:
+        min_distance = float('inf')
+        current_waypoint = -1
+
+        for i, pose in enumerate(path.poses):
             dis = sqrt((pose.pose.position.x - self.vehicle_pos_x)**2 +
-                       (pose.pose.position.y - self.vehicle_pos_y)**2)
+                    (pose.pose.position.y - self.vehicle_pos_y)**2)
+            if dis < min_distance:
+                min_distance = dis
+            
             if dis <= max_distance:
                 filtered_path.poses.append(pose)
+
             if len(filtered_path.poses) > 0 and dis > max_distance:
                 break  # 이미 거리를 넘는 경우 이후는 필요 없음
 
-        return filtered_path
+        # 현재 waypoint와 최소 거리를 기준으로 임계값 설정
+        threshold = 4.5  # 이 값은 테스트 후 조정 필요
+        if min_distance < threshold:
+            lane_position = 1  # 1차선
+        else:
+            lane_position = 0  # 다른 차선
+
+        return filtered_path, lane_position
 
     def collision_check(self, object_data, out_path, right_crash):
         selected_lane = -1
-        lane_weight = [112, 11, 10, 9, 8, 7, 6, 0, 1, 2, 3, 4, 5, 6, 107]
+        lane_weight = [12, 11, 10, 9, 8, 7, 6, 0, 1, 2, 3, 4, 5, 6, 1000]
+        min_r = self.calculate_curvature(self.local_path, 10)
+
+        # 사각형의 좌표를 정의 (주어진 네 좌표)
+        rect = [(690,-137), (693,-129), (530,-28), (524,-35)]
         
         # 객체와의 충돌 여부 체크 및 가중치 부여
         for point in object_data.points:
@@ -132,55 +167,97 @@ class latticePlanner:
                         lane_weight[path_num] += 100
 
         # 필터링된 우측 경로를 사용하여 충돌 검사 및 가중치 계산
-        filtered_right_path = self.filter_path_by_distance(self.right_path, 30)
+        filtered_right_path, lane_position = self.filter_path_by_distance(self.right_path, 30)
 
+        # 우측 경로가 짧으면 종료
         if len(filtered_right_path.poses) < 2:
             print("Right path too short for comparison.")
-            return selected_lane  # 비교할 수 없으므로 함수를 종료
-
+            return selected_lane
+        
         # 우측 경로에서 시작점과 중간점 추출
         right_start = filtered_right_path.poses[0].pose.position
         mid_index = len(filtered_right_path.poses) // 2
         right_mid = filtered_right_path.poses[mid_index].pose.position
 
-        # 경로 이탈 체크
-        for path_num in range(len(out_path)):
-            min_right_dist = float('inf')  # min_right_dist를 무한대로 초기화하여 최소 거리를 찾을 수 있도록 설정
-            path_positions = np.array([[pose.pose.position.x, pose.pose.position.y] for pose in out_path[path_num].poses])
-            right_positions = np.array([[rp.pose.position.x, rp.pose.position.y] for rp in filtered_right_path.poses])
-    
-            # 거리 계산 (벡터 연산)
-            for path_pos in path_positions:
-                distances = np.sqrt(np.sum((right_positions - path_pos)**2, axis=1))
-                min_right_dist = np.min(distances)
-            
-            if min_right_dist < 0.5:
-                lane_weight[path_num] += 100
+        # lane_position이 1일 때만 우측 경로를 계산
+        if lane_position == 1:
 
-        # 각 회피 경로의 포즈마다 외적을 계산하고 가중치 부여
-        for path_num in range(len(out_path)):
-            if path_num in [0, 1, 2, 3, 4]:  # path_num이 0, 1, 2일 때만 계산
-                for path_pos in out_path[path_num].poses:
-                    path_point = path_pos.pose.position
+            # 경로 이탈 체크
+            for path_num in range(len(out_path)):
+                min_right_dist = float('inf')  # min_right_dist를 무한대로 초기화하여 최소 거리를 찾을 수 있도록 설정
+                path_positions = np.array([[pose.pose.position.x, pose.pose.position.y] for pose in out_path[path_num].poses])
+                right_positions = np.array([[rp.pose.position.x, rp.pose.position.y] for rp in filtered_right_path.poses])
 
-                    # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
-                    right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
-                    path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
-
-                    # 외적 값 계산
-                    cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
-
-                    if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
+                # 거리 계산 (벡터 연산)
+                for path_pos in path_positions:
+                    distances = np.sqrt(np.sum((right_positions - path_pos) ** 2, axis=1))
+                    min_right_dist = np.min(distances)
+                    
+                    if min_right_dist < 0.7:
                         lane_weight[path_num] += 100
 
+
+            # 각 회피 경로의 포즈마다 외적을 계산하고 가중치 부여
+            if min_r is not None and min_r < 100:
+                # min_r < 100일 때 path_num이 0~7인 경우 외적 계산
+                for path_num in range(len(out_path)):
+                    for path_pos in out_path[path_num].poses:
+                        path_point = path_pos.pose.position
+
+                        # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
+                        right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
+                        path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
+
+                        # 외적 값 계산
+                        cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
+
+                        if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
+                            lane_weight[path_num] += 100
+            else:
+                # min_r >= 100일 때 path_num이 0~4인 경우 외적 계산
+                for path_num in range(5):  # 0~4
+                    for path_pos in out_path[path_num].poses:
+                        path_point = path_pos.pose.position
+
+                        # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
+                        right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
+                        path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
+
+                        # 외적 값 계산
+                        cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
+
+                        if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
+                            lane_weight[path_num] += 100
+        else:
+            # min_r >= 100일 때 path_num이 0~4인 경우 외적 계산
+                for path_num in range(2):  
+                    for path_pos in out_path[path_num].poses:
+                        path_point = path_pos.pose.position
+
+                        # 벡터 계산: 시작점 -> 중간점 (우측 경로), 시작점 -> 현재 경로 위치 (회피 경로)
+                        right_vec = np.array([right_mid.x - right_start.x, right_mid.y - right_start.y])
+                        path_vec = np.array([path_point.x - right_start.x, path_point.y - right_start.y])
+
+                        # 외적 값 계산
+                        cross_product = np.cross(np.array([right_vec[0], right_vec[1], 0]), np.array([path_vec[0], path_vec[1], 0]))[2]
+
+                        if cross_product < 0:  # 외적 값이 음수면 경로가 우측에 있으므로 가중치 추가
+                            lane_weight[path_num] += 100
+
+                for path_num in [13 ,14]:
+                    # 회피 경로 포인트가 사각형 내부에 있을 때 가중치 추가
+                    for path_pos in out_path[path_num].poses:
+                        path_point = path_pos.pose.position
+                        if self.rectangle(path_point.x, path_point.y, rect):
+                            print("sex1")
+                            lane_weight[path_num] += 100  # 사각형 내부에 있을 때 추가 가중치
+                
+
+
+
         if right_crash:
-            lane_weight[0] += 10000
-            lane_weight[1] += 10000
-            lane_weight[2] += 10000
-            lane_weight[3] += 10000
-            lane_weight[4] += 10000
-            lane_weight[5] += 10000
-            
+            for i in range(6):
+                lane_weight[i] += 10000
 
         for i in range(len(out_path)):
             print(f"{i} : {lane_weight[i]}")
@@ -191,6 +268,34 @@ class latticePlanner:
     def distance_callback(self, msg):
         self.is_distance = True
         self.distances = msg.data  # 거리 데이터를 Float32MultiArray로 저장
+
+
+    def calculate_curvature(self, local_path, point_num):
+        r_values = []  # r 값을 저장할 리스트
+        
+        if len(local_path.poses) > point_num * 2:
+            for i in range(point_num, len(local_path.poses) - point_num):
+                x_list = []
+                y_list = []
+                for box in range(-point_num, point_num):
+                    x = local_path.poses[i + box].pose.position.x
+                    y = local_path.poses[i + box].pose.position.y
+                    x_list.append([-2 * x, -2 * y, 1])
+                    y_list.append((-x * x) - (y * y))
+                
+                # 최소 자승법을 이용한 곡률 반지름 계산
+                A = np.array(x_list)
+                B = np.array(y_list)
+                a, b, c = np.dot(np.linalg.pinv(A), B)
+                r = (a ** 2 + b ** 2 - c) ** 0.5
+                r_values.append(r)  # r 값을 리스트에 추가
+        
+        # r 값 중 최솟값을 구함
+        if r_values:
+            min_r = r_values[0]
+            return min_r
+        
+        return None
 
     def path_callback(self, msg):
         self.is_path = True
@@ -248,7 +353,7 @@ class latticePlanner:
             local_end_point = det_trans_matrix.dot(world_end_point)
             world_ego_vehicle_position = np.array([[vehicle_pose_x], [vehicle_pose_y], [1]])
             local_ego_vehicle_position = det_trans_matrix.dot(world_ego_vehicle_position)   
-            lane_off_set = [-13, -10 ,-8, -5, -4, -3, -2, 0, 2, 3, 4, 5, 8, 10, 13]
+            lane_off_set = [-10, -8 ,-6, -5, -4, -3, -2, 0, 2, 3, 4, 5, 8, 10, 15]
             local_lattice_points = []
             
             for i in range(len(lane_off_set)):
