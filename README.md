@@ -94,5 +94,49 @@ self.is_imu = True
 |UTM 변환|위경도 → UTM 변환 및 오프셋 보정|
 |Odometry 생성|위치+자세 결합 후 /odom 퍼블리시|
 |주기적 동작|10Hz 주기로 데이터 수신 여부 체크 및 퍼블리시|
+</details>
+
+### global_path_pub.py - 전역 경로 퍼블리시 노드
+|역할|저장된 경로 파일(mando_path.txt)을 읽어 /global_path로 퍼블리시|
+|------|------|
+|구독 토픽| X|
+|퍼블리시 토픽| /global_path (Path)|
+|주요 기능 요약|전역 경로 제공|
+<details> <summary>global_path 코드 분석</summary>
+
+#### 1. 전역 경로 파일 불러오기 
+  
+```python
+rospack = rospkg.RosPack()
+pkg_path = rospack.get_path('beginner_tutorials')
+full_path = pkg_path + '/path/mando_path.txt'
+
+with open(full_path, 'r') as f:
+    lines = f.readlines()
+    for line in lines:
+        tmp = line.split()
+        read_pose = PoseStamped()
+        read_pose.pose.position.x = float(tmp[0])
+        read_pose.pose.position.y = float(tmp[1])
+        read_pose.pose.orientation.w = 1
+        self.global_path_msg.poses.append(read_pose)
+```
+* rospkg를 통해 패키지 경로를 가져옴
+* 지정된 파일(mando_path.txt)에서 좌표 데이터를 읽어와 PoseStamped로 변환
+* 변환된 포즈들을 Path 메시지에 추가
+
+#### 2. 전역 경로 퍼블리시
+```python
+rate = rospy.Rate(20)  # 20Hz
+while not rospy.is_shutdown():
+    self.global_path_pub.publish(self.global_path_msg)
+    rate.sleep()
+```
+* 20Hz 주기로 /global_path에 전역 경로를 퍼블리시
+* 시뮬레이션 또는 실제 차량에서 전역 경로 참조 가능
+</details>
+  
+
+
 
 
