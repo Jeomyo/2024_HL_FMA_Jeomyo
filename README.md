@@ -3,9 +3,12 @@
 ## 패키지 상세 구성 및 주요 기능
 ![image](https://github.com/user-attachments/assets/a353038b-8bd2-40bd-abc0-087ef68d2ef9)
 
-### 1. GPS IMU 데이터 Publish
 
-#### 1) gpsimu_parser.py - GPS & IMU 데이터 파싱 및 Odometry 생성
+
+
+## 1. GPS IMU 데이터 Publish
+
+### 1) gpsimu_parser.py - GPS & IMU 데이터 파싱 및 Odometry 생성
 |역할|GPS 및 IMU 데이터를 수신하고, UTM 좌표 변환 후 /odom으로 퍼블리시|
 |------|------|
 |구독 토픽| /gps (GPSMessage), /imu (Imu)|
@@ -60,7 +63,7 @@ self.odom_msg.pose.pose.position.z = 0.
 * 변환된 UTM 좌표에서 GPS 오프셋(eastOffset, northOffset)을 보정
 * 변환 결과를 /odom 메시지의 position에 저장
 
-#### 4. IMU 데이터 수신 및 자세 저장 (imu_callback)
+#### 4. IMU 데이터 수신 및 orientation 저장 (imu_callback)
 ```python
 if data.orientation.w == 0:
     self.odom_msg.pose.pose.orientation.x = 0.0
@@ -98,15 +101,22 @@ self.is_imu = True
 |주기적 동작|10Hz 주기로 데이터 수신 여부 체크 및 퍼블리시|
 </details>
 
-### 2. global_path_pub.py, local_path_pub.py - 정밀 도로지도 및 경로 계획
 
-경로 계획이란?
+
+
+## 2. global_path_pub.py, local_path_pub.py - 정밀 도로지도 및 경로 계획
+
+### 경로 계획이란?
 * 목표 지점까지 최적의 경로로 도달하게 하는 기술
 * 경로 계획은 크게 전역 경로 계획과 지역 경로 계획으로 나눌 수 있음.
-|전역 경로 계획|지도에 기반하여 경로를 자율적으로 생성|
-|지역 경로 계획|전역 경로에서 얻은 구간을 주행하기 위하여 차량이 실제로 주행해야 할 경로|
 
-#### 1) global_path_pub.py - 전역 경로 퍼블리시
+| 구분 | 설명 |
+|---|---|
+| 전역 경로 계획 | 지도에 기반하여 경로를 자율적으로 생성 |
+| 지역 경로 계획 | 전역 경로에서 얻은 구간을 주행하기 위하여 차량이 실제로 주행해야 할 경로 |
+
+
+### 1) global_path_pub.py - 전역 경로 퍼블리시
 |역할|저장된 경로 파일(mando_path.txt)을 읽어 /global_path로 퍼블리시|
 |------|------|
 |구독 토픽| X|
@@ -146,7 +156,7 @@ while not rospy.is_shutdown():
 * 시뮬레이션 또는 실제 차량에서 전역 경로 참조 가능
 </details>
 
-#### 2) local_path_pub.py - 로컬 경로 생성 및 퍼블리시 노드
+### 2) local_path_pub.py - 로컬 경로 생성 및 퍼블리시 노드
 |항목|설명|
 |------|------|
 |구독 토픽|/odom (nav_msgs/Odometry), /global_path (nav_msgs/Path)|
