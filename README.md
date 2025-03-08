@@ -16,7 +16,7 @@
 |주요 기능 요약| GPS 좌표를 UTM 좌표로 변환하여 위치 정보 제공, IMU에서 차량의 자세(Orientation) 정보 제공|
 
 <details>
-<summary> gpsimu_parser 코드 분석 펼쳐보기 </summary>
+<summary> <b> 📌 gpsimu_parser 코드 분석 펼쳐보기 </b> </summary>
   
 ### 1. 노드 초기화 및 토픽 설정
   
@@ -122,7 +122,7 @@ self.is_imu = True
 |구독 토픽| X|
 |퍼블리시 토픽| /global_path (Path)|
 |주요 기능 요약|전역 경로 제공|
-<details> <summary>global_path 코드 분석 펼쳐보기</summary>
+<details> <summary><b> 📌 global_path 코드 분석 펼쳐보기 </b></summary>
 
 ### 1. 전역 경로 파일 불러오기 
   
@@ -163,7 +163,7 @@ while not rospy.is_shutdown():
 |퍼블리시 토픽|/local_path (nav_msgs/Path)|
 |주요 기능 요약|차량 현재 위치 기반 최근접 Waypoint 탐색 및 로컬 경로 생성|
 
-<details> <summary>local_path 코드 분석 펼쳐보기</summary>
+<details> <summary> <b> 📌local_path 코드 분석 펼쳐보기 </b></summary>
 
 ### 1. 글로벌 경로 수신 및 저장
 ```python
@@ -288,7 +288,92 @@ class SCANCluster:
 * /clusters, /cluster_distances 토픽을 생성하여  퍼블리시
 * DBSCAN을 사용하여 밀집도가 높은 영역을 클러스터링
 
+### 2. PointCloud2 데이터를 numpy 배열로 변환
+```python
+def pointcloud2_to_xyz(self, cloud_msg):
+    point_list = []
+    for point in pc2.read_points(cloud_msg, skip_nans=True):
+        dist = (point[0]**2 + point[1]**2)**0.5  # 거리 계산
+        # 특정 영역 내의 포인트만 필터링
+        if point[0] > 0 and point[1] > -6 and point[1] < 6 and point[2] > -0.78 and point[2] < 3 and dist < 60:
+            point_list.append((point[0], point[1], dist))
 
+    point_np = np.array(point_list, np.float32)  
+    return point_np  
+```
+* 수집한 포인트들 중 필요한 데이터들만 필터링. (필터링을 걸어주지 않으면 연산 딜레이가 너무 심함)
+* x, y, 거리 데이터만 추출하여 numpy 배열로 변환
+
+###  3.LiDAR 데이터 수신 및 클러스터 좌표 퍼블리시
+```python
+def callback(self, msg):
+    # LiDAR 데이터를 numpy 배열로 변환
+    self.pc_np = self.pointcloud2_to_xyz(msg)
+
+    # 거리 값만 추출하여 퍼블리시
+    distances = self.pc_np[:, 2]  
+    distances_msg = Float32MultiArray()
+    distances_msg.data = distances
+    self.distance_pub.publish(distances_msg)
+
+    # 클러스터 중심과 경계를 퍼블리시
+    cluster_corners_and_center = self.cluster(self.pc_np[:, :2])
+    self.cluster_pub.publish(cluster_corners_and_center)
+```
+ * /velodyne_points에서 데이터를 받아서 numpy 배열로 변환
+ * 각 포인트의 거리 값을 Float32MultiArray로 변환하여 퍼블리시
+ * 클러스터링 후 중심 좌표 및 경계를 /clusters 토픽으로 퍼블리시
+
+### 4. 클러스터링 (DBSCAN 적용 및 중심/경계 계산)
+```python
+def cluster(self, xy):
+    # x, y 좌표만 사용하여 DBSCAN 클러스터링 수행
+    db = self.dbscan.fit_predict(xy)  
+    n_cluster = np.max(db) + 1  
+
+    cluster_msg = PoseArray()  
+    cluster_msg.header.frame_id = "/map"
+    cluster_msg.header.stamp = rospy.Time.now()
+
+    # 각 클러스터에 대해 경계 및 중심 계산
+    for cluster in range(n_cluster):
+        cluster_points = xy[db == cluster, :]
+
+        if len(cluster_points) > 0:
+            # 최소/최대 좌표 계산 (경계 박스)
+            x_min, y_min = np.min(cluster_points, axis=0)
+            x_max, y_max = np.max(cluster_points, axis=0)
+
+            # 클러스터 중심 좌표 계산
+            center_x = np.mean(cluster_points[:, 0])  
+            center_y = np.mean(cluster_points[:, 1])  
+
+            # 중심 좌표를 Pose로 변환하여 추가
+            center_pose = Pose()
+            center_pose.position.x = center_x
+            center_pose.position.y = center_y
+            center_pose.position.z = 0  
+            cluster_msg.poses.append(center_pose)
+
+            # 바운딩 박스의 4개 꼭짓점 계산 및 추가
+            corners = np.array([
+                [x_min, y_min], [x_min, y_max], [x_max, y_min], [x_max, y_max]
+            ])
+
+            for corner in corners:
+                pose = Pose()
+                pose.position.x = corner[0]
+                pose.position.y = corner[1]
+                pose.position.z = 0  
+                cluster_msg.poses.append(pose)
+
+    return cluster_msg
+```
+* DBSCAN을 적용하여 클러스터를 자동으로 생성
+* 클러스터 중심 좌표를 계산하여 Pose로 변환 후 추가
+* 클러스터 경계를 계산하고 4개의 꼭짓점을 Pose로 변환하여 추가로 포함 시킴
+
+</details>
 
 
 
