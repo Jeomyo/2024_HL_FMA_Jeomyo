@@ -222,7 +222,24 @@ self.local_path_pub.publish(local_path_msg)
 * 생성된 로컬 경로는 /local_path 토픽으로 주기적으로 퍼블리시되어, pure_pursuit, lattice_planner의 입력으로 사용된다.
 </details>
 
-  
+
+## 3. lidar_velodyne_cluster, lidar_velodyne_cluster_viz - 클러스터링 기반 Lidar 데이터 처리
+LiDAR 데이터를 활용하여 실시간 클러스터링을 수행하는 노드. DBSCAN을 사용하여 주변 객체를 감지하고 클러스터의 중심과 경계를 계산하여 시각화함.
+
+### 클러스터링이란?
+데이터 포인트들을 유사한 특성을 가진 그룹으로 나누는 비지도 학습 방법 중 하나. 이 프로젝트에서는 여러가지 클러스터링 기법 중 DBSCAN (Density-Based Spatial Clustering of Applications with Noise) 알고리즘을 사용하여 LiDAR 데이터를 기반으로 객체를 클러스터링하였다.
+
+#### 🔹 DBSCAN 알고리즘
+DBSCAN은 밀집도가 높은 영역을 중심으로 군집을 형성하는 알고리즘.
+
+eps: 같은 클러스터로 묶일 수 있는 최대 거리
+min_samples: 최소한 몇 개의 포인트가 있어야 클러스터로 인정되는지 결정하는 값
+이 방법은 K-Means와 달리 클러스터 개수를 미리 지정하지 않아도 되고, 노이즈를 효과적으로 제거할 수 있다는 장점이 있다.
+
+```python
+self.dbscan = DBSCAN(eps=0.3, min_samples=3)  # DBSCAN 클러스터링 파라미터 설정
+```
+본 대회에서는 미니 박스와 같은 작은 물체도 인식해야 하므로, 클러스터링의 민감도를 높이기 위해 eps와 min_samples 값을 상대적으로 낮게 설정하였다.
   
 
 
