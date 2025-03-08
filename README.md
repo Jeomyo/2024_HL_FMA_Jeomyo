@@ -163,7 +163,7 @@ while not rospy.is_shutdown():
 |퍼블리시 토픽|/local_path (nav_msgs/Path)|
 |주요 기능 요약|차량 현재 위치 기반 최근접 Waypoint 탐색 및 로컬 경로 생성|
 
-<details> <summary> <b> 📌local_path 코드 분석 펼쳐보기 </b></summary>
+<details> <summary> <b> 📌 local_path 코드 분석 펼쳐보기 </b></summary>
 
 ### 1. 글로벌 경로 수신 및 저장
 ```python
