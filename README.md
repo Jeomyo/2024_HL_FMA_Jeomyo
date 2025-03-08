@@ -1,8 +1,9 @@
 # HL MORAI 자율주행 대회
 
 ## 📌 패키지 상세 구성 및 주요 기능
-![image](https://github.com/user-attachments/assets/a353038b-8bd2-40bd-abc0-087ef68d2ef9)
-
+<p align="left">
+  <img src="https://github.com/user-attachments/assets/a353038b-8bd2-40bd-abc0-087ef68d2ef9" alt="이미지 설명" width="600">
+</p>
 
 
 
@@ -374,6 +375,112 @@ def cluster(self, xy):
 * 클러스터 경계를 계산하고 4개의 꼭짓점을 Pose로 변환하여 추가로 포함 시킴
 
 </details>
+
+## 2) lidar_velodyne_cluster_viz.py - LiDAR 클러스터 시각화 노드
+|항목|설명|
+|------|------|
+|구독 토픽|/clusters (geometry_msgs/PoseArray)|
+|퍼블리시 토픽|/visualization_marker_array (visualization_msgs/MarkerArray)|
+|주요 기능 요약|/clusters 토픽의 데이터를 받아 전역좌표계로 변환하고 RViz에서 시각적으로 표현|
+
+<details> <summary> <b> 📌 lidar_velodyne_cluster_viz.py 코드 분석 펼쳐보기 </b></summary>
+
+### 1. 노드 초기화
+```python
+class Cluster_viz:
+    def __init__(self):
+        rospy.Subscriber("/clusters", PoseArray, self.callback)  # 클러스터 데이터 구독
+        rospy.Subscriber("/odom", Odometry, self.odom_callback)  # 차량 위치 및 자세 구독
+        rospy.Subscriber("/Competition_topic", EgoVehicleStatus, self.status_callback)  # 차량 속도 구독
+
+        self.object_pointcloud_pub = rospy.Publisher('object_pointcloud_data', PointCloud, queue_size=1)  # 객체 데이터 퍼블리시
+
+        self.is_odom = False
+        self.cluster_status = False
+        self.dangerous_status = False
+        self.prev_dangerous_data = None
+        self.cluster_data = None  # 초기화
+
+        rate = rospy.Rate(50)  # 50Hz 주기 실행
+        while not rospy.is_shutdown():
+            if self.is_odom and self.cluster_status:
+                # (1) 차량의 방향을 반영한 좌표 변환 행렬 생성
+                trans_matrix = self.trans_matrix(self.vehicle_yaw)
+
+                # (2) 클러스터 데이터를 전역 좌표계로 변환
+                obj_data_cluster = self.tf_global(trans_matrix, self.cluster_data)
+
+                # (3) 변환된 객체 데이터를 퍼블리시
+                self.object_pointcloud_pub.publish(obj_data_cluster)
+
+            rate.sleep()
+```
+* /clusters, /odom, /Competition_topic 3가지 주요 데이터를 구독
+* /object_pointcloud_data 토픽을 생성하여 변환된 객체 데이터를 퍼블리시
+* 차량의 현재 위치와 방향을 고려하여 LiDAR 데이터를 전역 좌표로 변환
+
+### 2.차량의 방향을 반영한 좌표 변환 행렬 생성
+```python
+def trans_matrix(self, vehicle_yaw):
+    trans_matrix = np.array([[math.cos(vehicle_yaw), -math.sin(vehicle_yaw), 0],
+                             [math.sin(vehicle_yaw), math.cos(vehicle_yaw), 0],
+                             [0, 0, 1]], dtype=np.float32)
+    return trans_matrix
+```
+* 차량의 회전(yaw)을 반영하는 변환 행렬을 생성
+* 차량의 현재 방향을 고려하여 LiDAR 데이터를 전역 좌표계로 변환
+
+### 3. 클러스터 데이터를 전역 좌표계로 변환
+```python
+def tf_global(self, trans_matrix, cluster_data):
+    obj_data = PointCloud()
+    obj_data.header.frame_id = 'map'
+    obj_data.header.stamp = rospy.Time.now()  # 타임스탬프 추가
+    obj_data.points = []  # 포인트 리스트 초기화
+
+    vehicle_pos_x = self.vehicle_pos_x  # 현재 차량의 x 위치
+    vehicle_pos_y = self.vehicle_pos_y  # 현재 차량의 y 위치
+
+    for num, i in enumerate(cluster_data.poses):
+        # (2) 로컬 좌표를 전역 좌표로 변환
+        local_result = [i.position.x + 1.5, i.position.y, 1]  # 차량 기준으로 x 축 1.5m 이동
+        temp = trans_matrix.dot(local_result)  # 변환 행렬 적용
+        global_result = [temp[0] + vehicle_pos_x, temp[1] + vehicle_pos_y]
+
+        # (3) 전역 좌표를 PointCloud에 추가
+        tmp_point = Point32()
+        tmp_point.x = global_result[0]
+        tmp_point.y = global_result[1]
+        tmp_point.z = 1  # 필요에 따라 수정 가능
+        obj_data.points.append(tmp_point)
+
+    return obj_data
+```
+* 클러스터 데이터를 차량 좌표에서 전역 좌표로 변환
+* 변환 행렬을 적용하여 차량 방향을 반영
+* 변환된 좌표를 PointCloud 포인트 리스트에 추가
+
+### 4. 클러스터 데이터 및 차량의 상태 (속도, 위치 등) 데이터 수신
+```python
+ def callback(self, msg):    
+        self.cluster_data = msg
+        self.cluster_status = True
+
+    def status_callback(self, msg):  # 속도만 처리
+        self.is_status = True
+        self.vehicle_velocity = msg.velocity.x * 3.6  # 속도를 km/h로 변환
+
+    def odom_callback(self, msg):
+        self.is_odom = True
+        odom_quaternion = (msg.pose.pose.orientation.x, msg.pose.pose.orientation.y, msg.pose.pose.orientation.z, msg.pose.pose.orientation.w)
+        _, _, self.vehicle_yaw = euler_from_quaternion(odom_quaternion)
+        self.vehicle_pos_x = msg.pose.pose.position.x
+        self.vehicle_pos_y = msg.pose.pose.position.y
+```
+</details>
+
+
+
 
 
 
