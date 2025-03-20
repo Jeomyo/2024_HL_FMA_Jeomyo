@@ -224,8 +224,8 @@ self.local_path_pub.publish(local_path_msg)
 </details>
 
 
-# 3. LiDAR 데이터 클러스터링
-LiDAR 데이터를 활용하여 실시간 클러스터링을 수행하는 노드. DBSCAN을 사용하여 주변 객체를 감지하고 클러스터의 중심과 경계를 계산하여 시각화함.
+# 3. Lidar 클러스터링을 통한 장애물 감지
+LiDAR 데이터로 실시간 클러스터링을 수행하여 장애물을 감지하는 노드. DBSCAN을 사용하여 주변 객체를 감지하고 클러스터의 중심과 경계를 계산하여 시각화함.
 
 ## 클러스터링이란?
 데이터 포인트들을 유사한 특성을 가진 그룹으로 나누는 비지도 학습 방법 중 하나. 이 프로젝트에서는 여러가지 클러스터링 기법 중 DBSCAN (Density-Based Spatial Clustering of Applications with Noise) 알고리즘을 사용하여 LiDAR 데이터를 기반으로 객체를 클러스터링하였다.
@@ -480,6 +480,160 @@ def tf_global(self, trans_matrix, cluster_data):
 </details>
 
 # 4. 정적 회피 주행 알고리즘
+
+## 1. 경로 추종 - Pure pursuit guidance
+
+<table>
+  <tr>
+    <td>
+      <img src="https://github.com/user-attachments/assets/6108b268-51f4-4947-8cff-6f5791252358" alt="Pure Pursuit Diagram" width="500">
+    </td>
+    <td> 
+     - L : Wheel base <br>
+     - δ : Steering <br>
+     - α : Look-ahead point angle <br>
+     - R : Curvature radius <br>
+     - dla: Look-ahead distance <br>
+     - vx: Longitudinal speed
+    </td>
+  </tr>
+</table>
+
+* 경로 위의 한 점을 원 호를 그리며 추종하는 알고리즘  
+* 자동차의 기구학과 전방주시거리 (Look-Ahead-Distance)라는 하나의 파라미터를 사용하여 조향각을 계산  
+* 차량의 후륜 축 중심을 기준으로 계산
+
+⚠ 단순히 pure pursuit만으로는 목표 속도에 도달하는 시간이 느리고, 오차가 심하므로 이 것만으로는 주행에 사용할 수 없음!
+
+### 1) 종방향 PID 제어기 설계 및 추가 
+PID (Proportional-Integral-Derivative) 제어
+<table>
+  <tr>
+    <td>
+      <img src="https://github.com/user-attachments/assets/1beee2e8-61bc-4cbd-8127-ca732e3e1173" alt="이미지 설명" width="400">
+    </td>
+    <td> 
+      <img src="https://github.com/user-attachments/assets/d521c2ad-e31a-4ff6-a874-c3656ade971a" alt="이미지 설명" width="300">
+    </td>
+  </tr>
+</table>
+
+* 원하는 값에 도달하기 위한 기초적인 피드백 제어 방법 중 하나
+* P, PI, PD, PID 등 제어 대상에 맞게 선택해서 사용할 수 있음
+* PID 제어는 수식이 매우 간단하고, 구현 난이도 대비 목표치 추종이나 외란 감쇄 효과에 탁월한 성능을 가짐
+* 적절한 이득값 조절이 필요 (K_p,K_I,K_D)
+
+✅ 실제 구현 결과 목표 속도에 더욱 빠르게 도달하고, 오차가 적은 것을 확인할 수 있었음!
+
+<details> <summary><b>📌 pidControl class 코드 분석 펼쳐보기</b></summary>
+
+### 1. pidControl 클래스 개요
+```python
+class pidControl:
+    def __init__(self):
+        self.p_gain = 0.3
+        self.i_gain = 0.00
+        self.d_gain = 0.03
+        self.prev_error = 0
+        self.i_control = 0
+        self.controlTime = 0.02
+```
+* ✅ 이 클래스는 차량의 속도를 PID 제어를 통해 조정하는 역할을 수행
+* ✅ p_gain, i_gain, d_gain 값을 조절하여 차량이 목표 속도에 정확하게 도달하도록 조작
+
+* p_gain → 현재 오차에 비례하여 보정
+* i_gain → 과거 오차를 누적하여 보정
+* d_gain → 오차 변화율(속도 차이 변화)을 고려하여 보정
+* controlTime → 제어 주기(샘플링 간격), 20ms (0.02초)로 설정
+
+### 2. PID 연산 과정
+```python
+def pid(self, target_vel, current_vel):
+    error = target_vel - current_vel
+    p_control = self.p_gain * error
+    self.i_control += error * self.controlTime  
+    d_control = self.d_gain * (error - self.prev_error) / self.controlTime
+    output = p_control + self.i_gain * self.i_control + d_control
+    self.prev_error = error
+    return output
+```
+
+| **제어 항목** | **역할** | **공식** |
+|--------------|---------|---------|
+| **P (비례 제어)** | 현재 오차 반영 | `P_out = K_p * e(t)` |
+| **I (적분 제어)** | 과거 오차 누적 보정 | `I_out = K_i * Σ e(t) * Δt` |
+| **D (미분 제어)** | 오차 변화율 보정 | `D_out = K_d * (Δe(t) / Δt)` |
+| **최종 PID 출력** | 위 3가지 합산 | `output = P_out + I_out + D_out` |
+
+### 3. 종방향 제어(Pure Pursuit + PID) 적용 흐름
+PID 제어기는 Pure Pursuit과 함께 사용되어 목표 속도에 빠르게 도달하면서,
+속도 오차를 줄여 주행 안정성을 향상시킨다.
+
+### 🚗 [Pure Pursuit + PID 속도 제어 흐름]
+
+1. 차량의 현재 속도(current_vel)와 목표 속도(target_vel) 차이를 계산
+2. PID 연산을 수행하여 가속(Throttle) 또는 감속(Brake) 값을 결정
+3. PID 제어값(output)이 0보다 크면 가속, 0보다 작으면 감속
+4.  차량이 목표 속도에 안정적으로 도달  
+
+```python
+# PID 출력값을 Throttle/Brake로 변환
+output = pidControl().pid(target_velocity, current_velocity)
+
+if output > 0:
+    ctrl_cmd_msg.accel = output  # 가속
+    ctrl_cmd_msg.brake = 0.0
+else:
+    ctrl_cmd_msg.accel = 0.0
+    ctrl_cmd_msg.brake = -output  # 감속
+```
+* PID 제어가 없을 경우 → 속도 도달 시간이 길고 오차가 큼
+* PID 제어를 추가하면 → 목표 속도에 빠르게 도달하고 안정적인 주행 가능
+
+#### 📌 결론
+
+* Pure Pursuit 단독으로는 속도 오차가 크므로, PID 제어기를 추가하여 속도 추종 성능을 향상
+* PID 제어기는 P(비례) / I(적분) / D(미분) 항목을 조합하여 최적의 속도 조절 수행
+* 목표 속도에 더 빠르게 도달하며, 제어 성능이 개선되었음
+
+✅ 결과적으로, Pure Pursuit과 PID 제어기의 조합은 기존보다 안정적인 경로 추종을 가능하게 함!
+</details>
+
+### 2) 경로 기반 속도 계획 추가
+* 차량 외부 요인 중 도로 모양만을 고려하여 속도 계획
+* 곡률을 구해서 곡률 기반에서 차량이 주행할 수 있는 최대 속도를 계산
+* 차량은 곡선에서 주행할 때 원심력을 받기 때문에, 곡선에서는 속도를 낮춰야 함. 따라서 속도 계획을 통해 차량이 전복되는 것을 방지하고, 직선에서는 최대 속도로 주행하며, 곡선에서는 안정적인 속도로 주행 가능
+
+#### 🚨 기존 문제점: Pure Pursuit만 사용했을 때의 한계
+Pure Pursuit 알고리즘은 차량이 경로를 따라가는 데 효과적이지만, 속도 조절 기능이 없어 커브 구간에서 매우 불안정함.
+
+* 직선 구간에서는 빠르게 주행 가능하지만 곡선 구간에서도 속도가 일정해버리면 차량이 커브를 돌 때 크게 벗어날 수 있음.
+* 속도를 조절하지 않으면 언더스티어(Understeer) 또는 오버스티어(Oversteer) 발생 가능
+  
+✅ 해결 방법: 도로의 곡률 기반 속도 계획 추가
+
+이 문제를 해결하기 위해 경로 기반 속도 계획(Velocity Planning)을 추가하여, 곡률 반경을 계산하고 적절한 속도를 설정함.
+
+* 도로의 곡률 반경을 계산하여 회전 반경이 작은 경우 속도를 줄임
+* 도로가 직선에 가까울 경우 차량 최대 속도로 주행
+* 도로 마찰 계수(노면 상태)까지 고려하여 현실적인 속도 조절\
+  
+🚗 어떻게 동작하는가?\
+
+1️⃣ 경로를 분석하여 도로의 곡률 반경(r)을 계산\
+
+2️⃣ 최소 제곱법(Least Squares Method, LSM)을 사용해 곡률 반경을 구함\
+
+3️⃣ 곡률 반경과 도로 마찰 계수를 활용하여 속도 제한을 설정\
+
+4️⃣ 커브에서는 감속, 직선에서는 가속 → 안정적인 주행 가능!\
+
+
+<details> <summary><b>📌 코드 상세 분석 펼쳐보기</b></summary>
+(여기에 코드 분석 넣기)
+
+</details>
+
 
 
 
