@@ -630,6 +630,60 @@ Pure Pursuit 알고리즘은 차량이 경로를 따라가는 데 효과적이�
 
 
 <details> <summary><b>📌 velocityPlanning 상세 분석 펼쳐보기</b></summary>
+  
+### 📌 ① 최소자승법(Least Squares Method)을 이용한 곡률 반경 계산
+  
+```python
+class velocityPlanning:
+    def __init__ (self, car_max_speed, road_friciton):
+        self.car_max_speed = car_max_speed
+        self.road_friction = road_friciton
+
+    def curvedBaseVelocity(self, gloabl_path, point_num):
+        out_vel_plan = []
+
+        for i in range(0,point_num):
+            out_vel_plan.append(self.car_max_speed)
+
+        for i in range(point_num, len(gloabl_path.poses) - point_num):
+            x_list = []
+            y_list = []
+            for box in range(-point_num, point_num):
+                x = gloabl_path.poses[i+box].pose.position.x
+                y = gloabl_path.poses[i+box].pose.position.y
+                x_list.append([-2*x, -2*y ,1])
+                y_list.append((-x*x) - (y*y))
+
+            #TODO: (6) 도로의 곡률 계산 - 최소 자승법 이용하여 곡률 반지름 "r" 계산
+            #========================================================#
+            A = np.array(x_list)
+            B = np.array(y_list)
+            a, b, c = np.dot(np.linalg.pinv(A), B)  
+
+            r = (a**2 + b**2 - c)**0.5       
+```
+
+- 경로의 초반 구간은 기준이 되는 앞뒤 포인트 수가 부족하므로 곡률 계산이 어렵다. 따라서 최대 속도를 그대로 사용하였다.
+  
+- 원의 방정식 $`(x - a)^2 + (y - b)^2 = r^2`$ 을 전개하여 정리하면, $`-2ax - 2by + c = -x^2 - y^2`$처럼 선형 형태로 나타낼 수 있다.
+  
+- 이를 최소자승법 형태인 $`A · [a, b, c]^T = B`$ 로 구성하여, 중심 좌표 $`(a, b)`$와 $`r^2 = a^2 + b^2 - c`$를 계산한다.
+  
+- 이때, $`[a, b, c]^T = (A^T A)^{-1} A^T B = A^+ B`$ 를 통해 최소자승 해를 구할 수 있으며 Python에서는 `np.linalg.pinv()`를 사용하여 의사역행렬(Pseudo-inverse) 방식으로 안정적인 해를 계산할 수 있다.
+
+- 계산된 곡률 반경 `r`이 **작을수록 커브가 심한 구간**, **클수록 직선에 가까운 구간**임을 의미한다.
+
+
+### 📌 ② 곡률 기반 최고 속도 계산
+```python
+v_max = sqrt(r * 9.8 * self.road_friction)
+if v_max > self.car_max_speed:
+    v_max = self.car_max_speed
+out_vel_plan.append(v_max)
+```
+-  $`v_max = sqrt(r*g*𝜇)`$ 공식을 기반으로 하여 최고 속도를 계산한다.
+-  곡률이 클수록 (직선일수록) 높은 속도를 허용하고, 곡률이 작을수록 (급커브) 낮은 속도로 제한한다.
+-  최대 속도 제한 고려하여 v_max를 클램핑(clamping)
 
 
 </details>
