@@ -1,11 +1,13 @@
-# HL MORAI 자율주행 대회
+# 2024 HL FMA - 정적 장애물 회피 기반 자율주행 시스템 (with MORAI)
 
-## 📌 패키지 상세 구성 및 주요 기능
+## 📌 시스템 구조 (System Architecture)
+
+아래는 센서부터 제어 명령까지 전체 처리 흐름을 보여주는 플로우차트입니다.
 <p align="left">
   <img src="https://github.com/user-attachments/assets/a353038b-8bd2-40bd-abc0-087ef68d2ef9" alt="이미지 설명" width="600">
 </p>
 
-
+## 📌 패키지 상세 구성 및 주요 기능
 
 # 1. GPS IMU 데이터 Publish
 
