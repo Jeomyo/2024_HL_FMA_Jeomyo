@@ -783,6 +783,129 @@ State Lattice Planner는 자율주행 차량이 전방 장애물을 인식했을
 
 이러한 개선을 통해 차량이 도로 바깥으로 벗어나는 문제를 해결하였고, 실제 MORAI 시뮬레이터에서는 도로 중심을 따라 안정적으로 장애물을 회피 주행하며, 대회 참가 팀 중 몇 안 되는 **완주에 성공하는 성과**를 거둘 수 있었다.
 
+<details> <summary><b>📌 Lattice Planner 상세 코드 분석 펼쳐보기</b></summary>
+  
+### ✅ 전체 구조 개요
+  
+```plaintext
+1. 입력: /local_path, /odom, /object_pointcloud_data, /right_path, /cluster_distances
+2. 충돌 여부 판단: check_collision()
+3. 충돌 시 회피 경로 후보 생성: latticePlanner()
+4. 각 경로의 안전성 평가: collision_check()
+5. 최종 경로 선택 및 /lattice_path 퍼블리시
+```
+### 🔹 1. 충돌 여부 판단 – check_collision()
+
+1) 객체(PointCloud)와의 충돌: 경로상의 pose와 객체 간의 거리 < 2.7m → 충돌
+```python
+ # 객체와의 충돌 검사
+        for point in object_data.points:
+            for path in ref_path.poses:
+                dis = sqrt((path.pose.position.x - point.x)**2 + (path.pose.position.y - point.y)**2)
+                if dis < 2.7:  # 충돌 판단 거리 설정
+                    is_crash = True
+                    break
+            if is_crash:  # 충돌이 발생하면 더 이상 확인할 필요가 없으므로 break
+                break
+```
+
+2) 추가 거리 정보 활용: /cluster_distances 토픽에서 받아온 거리값이 4.5m 미만 → 충돌
+  ```python
+  
+        # 거리 값 리스트에서 충돌 여부 판단 (distance_callback을 통해 수신된 거리 값 사용)
+        if self.is_distance and self.distances is not None:
+            for i, diss in enumerate(self.distances):
+                if diss < 4.5:  # 충돌 판단 거리 설정
+                    is_crash = True
+                    print(f"충돌 위험! 객체와의 거리: {diss}")
+                    break
+  ```
+
+3) 우측 경계(right_path)와의 충돌: 차량과 경계 경로 사이 거리 < 1m → 우측 경계 침범으로 판단
+```python
+ filtered_right_path, lane_position = self.filter_path_by_distance(self.right_path, 30)
+
+        # 우측 경계와의 충돌 검사
+        for path in filtered_right_path.poses:
+            dis_right = sqrt((vehicle_x - path.pose.position.x)**2 +
+                            (vehicle_y - path.pose.position.y)**2)
+            if dis_right < 1:  # 충돌 판단 거리
+                right_crash = True
+                print("right crash!")
+                break
+```
+
+- 경계 필터링은 30m 이내 범위만 고려하여 계산 효율 개선
+
+### 🔹 2. 회피 경로 후보 생성 – latticePlanner()
+1) 좌표계 변환 (Global → Local)
+```python
+theta = atan2(global_ref_start_next_point[1] - global_ref_start_point[1], global_ref_start_next_point[0] - global_ref_start_point[0])
+            translation = [global_ref_start_point[0], global_ref_start_point[1]]
+
+            # 회전 변환
+            trans_matrix = np.array([
+                [cos(theta), -sin(theta), translation[0]], 
+                [sin(theta), cos(theta), translation[1]], 
+                [0, 0, 1]
+            ])
+
+            # 역 변환
+            det_trans_matrix = np.array([
+                [trans_matrix[0][0], trans_matrix[1][0], -(trans_matrix[0][0] * translation[0] + trans_matrix[1][0] * translation[1])], 
+                [trans_matrix[0][1], trans_matrix[1][1], -(trans_matrix[0][1] * translation[0] + trans_matrix[1][1] * translation[1])],
+                [0, 0, 1]
+            ])
+```
+
+2) 회피 후보 위치 설정 (오프셋 15개)
+```python
+lane_off_set = [-10, -8 ,-6, -5, -4, -3, -2, 0, 2, 3, 4, 5, 8, 10, 15]
+```
+- 기준 경로에서 좌우로 총 15개 오프셋을 둬서 회피 경로의 종착점 생성.
+
+- 각각의 종착점은 차량 기준 Local 좌표로 설정됨.
+
+3) 3차 다항식 기반 곡선 생성
+```python
+ d = y_start
+ c = 0
+ b = 3 * (y_end - y_start) / x_end**2
+ a = -2 * (y_end - y_start) / x_end**3
+
+ for x in waypoints_x:
+      result = a * x**3 + b * x**2 + c * x + d
+      waypoints_y.append(result)
+```
+시작점과 종점 사이를 부드럽게 이어주는 Cubic Polynomial 경로를 생성.
+
+x는 일정 간격으로 나누고, y는 다항식으로 계산.
+
+4) Local → Global 변환 후 Path 생성
+```python
+ # Local -> Global 변환 후 lattice path에 추가
+ for i in range(len(waypoints_y)):
+      local_result = np.array([[waypoints_x[i]], [waypoints_y[i]], [1]])
+      global_result = trans_matrix.dot(local_result)
+```
+- 생성한 곡선 경로를 다시 Global 좌표계로 변환.
+
+- 변환된 결과를 PoseStamped로 하나씩 넣어서 Path로 완성.
+
+5) 모든 경로를 Publish
+```python
+# 경로 Publish
+for i in range(len(out_path)):
+     globals()['lattice_pub_{}'.format(i + 1)] = rospy.Publisher('/lattice_path_{}'.format(i + 1), Path, queue_size=1)
+     globals()['lattice_pub_{}'.format(i + 1)].publish(out_path[i])
+```
+생성된 15개 후보 경로를 각각의 `/lattice_path_1`, `/lattice_path_2`, `…`로 퍼블리시해서 RViz에서 시각화하거나 후속 경로 선택 단계에서 사용할 수 있도록 함.
+
+### 🔹 3. 경로 안전성 평가 – collision_check()
+
+
+
+
 
 
 
