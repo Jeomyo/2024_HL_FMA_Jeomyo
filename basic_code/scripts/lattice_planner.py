@@ -156,7 +156,8 @@ class latticePlanner:
         min_r = self.calculate_curvature(self.local_path, 10)
 
         # 사각형의 좌표를 정의 (주어진 네 좌표)
-        rect = [(690,-137), (693,-129), (530,-28), (524,-35)]
+        rect1 = [(690,-137), (693,-129), (530,-28), (524,-35)]
+        rect2 = [(510, -17), (467, 9), (460, 0), (504, -27)]
         
         # 객체와의 충돌 여부 체크 및 가중치 부여
         for point in object_data.points:
@@ -248,11 +249,18 @@ class latticePlanner:
                     # 회피 경로 포인트가 사각형 내부에 있을 때 가중치 추가
                     for path_pos in out_path[path_num].poses:
                         path_point = path_pos.pose.position
-                        if self.rectangle(path_point.x, path_point.y, rect):
-                            print("sex1")
+                        if self.rectangle(path_point.x, path_point.y, rect1):
+                            print("position in rect1")
                             lane_weight[path_num] += 100  # 사각형 내부에 있을 때 추가 가중치
-                
 
+
+                for path_num in [12, 13 ,14]:
+                    # 회피 경로 포인트가 사각형 내부에 있을 때 가중치 추가
+                    for path_pos in out_path[path_num].poses:
+                        path_point = path_pos.pose.position
+                        if self.rectangle(path_point.x, path_point.y, rect2):
+                            print("position in rect2")
+                            lane_weight[path_num] += 100  # 사각형 내부에 있을 때 추가 가중치
 
 
         if right_crash:
