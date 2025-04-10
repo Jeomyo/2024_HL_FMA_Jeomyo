@@ -506,6 +506,8 @@ def tf_global(self, trans_matrix, cluster_data):
 * 차량의 후륜 축 중심을 기준으로 계산
 
 ⚠ 단순히 pure pursuit만으로는 목표 속도에 도달하는 시간이 느리고, 오차가 심하므로 이 것만으로는 주행에 사용할 수 없음!
+특히 곡선 주행 시 속도가 빠르면 큰 오버슈트 발생 → 커브 탈선 위험
+또한 장애물 상황에서 단순 Pure Pursuit는 정지 제어가 불가능하므로 반드시 속도 제어 로직과 병행해야 실차 운용 가능
 
 ### 1) 종방향 PID 제어기 설계 및 추가 
 PID (Proportional-Integral-Derivative) 제어
