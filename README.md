@@ -792,10 +792,11 @@ State Lattice Planner는 자율주행 차량이 전방 장애물을 인식했을
 2. 충돌 여부 판단: check_collision()
 3. 충돌 시 회피 경로 후보 생성: latticePlanner()
 4. 각 경로의 안전성 평가: collision_check()
+5. 경로 안정성 평가를 위한 보조 함수: calculate_curvature(), rectangle()
 5. 최종 경로 선택 및 /lattice_path 퍼블리시
 ```
 ### 🔹 1. 충돌 여부 판단 – check_collision()
-
+✅ 목적: 차량 경로와 장애물(PointCloud), 도로 경계(right_path) 간의 거리를 비교하여 충돌 여부를 판단
 1) 객체(PointCloud)와의 충돌: 경로상의 pose와 객체 간의 거리 < 2.7m → 충돌
 ```python
  # 객체와의 충돌 검사
@@ -838,6 +839,7 @@ State Lattice Planner는 자율주행 차량이 전방 장애물을 인식했을
 - 경계 필터링은 30m 이내 범위만 고려하여 계산 효율 개선
 
 ### 🔹 2. 회피 경로 후보 생성 – latticePlanner()
+✅ 목적: 기준 경로 주변 좌우로 15개의 회피 후보 경로를 생성하고 Global 좌표로 변환하여 퍼블리시
 1) 좌표계 변환 (Global → Local)
 ```python
 theta = atan2(global_ref_start_next_point[1] - global_ref_start_point[1], global_ref_start_next_point[0] - global_ref_start_point[0])
@@ -857,7 +859,10 @@ theta = atan2(global_ref_start_next_point[1] - global_ref_start_point[1], global
                 [0, 0, 1]
             ])
 ```
-
+- 차량 기준(Local 좌표계)에서 경로를 계산한 뒤, 이를 Global 좌표계로 변환해야 RViz 및 경로 추종에서 활용 가능함
+- `det_trans_matrix`는 Global → Local 변환 (경로 종착점 위치 계산용)
+- `trans_matrix`는 Local → Global 변환 (경로 최종 포인트 변환용)
+  
 2) 회피 후보 위치 설정 (오프셋 15개)
 ```python
 lane_off_set = [-10, -8 ,-6, -5, -4, -3, -2, 0, 2, 3, 4, 5, 8, 10, 15]
@@ -902,6 +907,131 @@ for i in range(len(out_path)):
 생성된 15개 후보 경로를 각각의 `/lattice_path_1`, `/lattice_path_2`, `…`로 퍼블리시해서 RViz에서 시각화하거나 후속 경로 선택 단계에서 사용할 수 있도록 함.
 
 ### 🔹 3. 경로 안전성 평가 – collision_check()
+✅ 목적: 여러 회피 경로 중 가장 안전하고 도로 내 정렬된 경로를 선택하기 위해 안정성을 평가함.
+1) 🔹 변수 초기화
+```python
+selected_lane = -1
+lane_weight = [12, 11, 10, 9, 8, 7, 6, 0, 1, 2, 3, 4, 5, 6, 1000]
+min_r = self.calculate_curvature(self.local_path, 10)
+```
+- selected_lane: 최종적으로 선택할 경로 인덱스
+
+- lane_weight: 각 회피 경로의 기본 가중치 설정 (가운데 경로가 우선순위 높음, 7번이 0)
+
+- min_r: 로컬 경로의 곡률 반경 계산 결과
+
+2) 🔹 장애물 충돌 여부 확인
+```python
+for point in object_data.points:
+    for path_num in range(len(out_path)):
+        for path_pos in out_path[path_num].poses:
+            dis = sqrt((point.x - path_pos.pose.position.x)^2 + (point.y - path_pos.pose.position.y)^2)
+            if dis < 1.45:
+                lane_weight[path_num] += 100
+```
+- 장애물과 경로 간 거리(dis)가 1.45m 이하이면 해당 경로에 충돌 위험 가중치 100 추가
+
+3) 🔹 우측 경로 필터링
+```python
+filtered_right_path, lane_position = self.filter_path_by_distance(self.right_path, 30)
+```
+- right_path의 waypoint를 차량 기준 거리 30m 이내만 추출하여 계산 (연산량 감소 및 최근접 정보 활용 목적)
+
+- lane_position == 1일 경우만 비교 수행 (우측 차선 기준으로 판단하는 조건)
+
+4) 🔹 우측 경로 기반 거리 비교
+```python
+for path_pos in path_positions:
+    distances = np.sqrt(np.sum((right_positions - path_pos) ** 2, axis=1))
+    min_right_dist = np.min(distances)
+    if min_right_dist < 0.7:
+        lane_weight[path_num] += 100
+```
+- 각 회피 경로의 점이 우측 경로에 0.7m 이하로 접근 시, 회피 경로가 도로 가장자리 침범 → 가중치 100 추가
+
+5) 🔹 우측 기준 외적 계산
+```python
+cross_product = np.cross([right_vec_x, right_vec_y, 0], [path_vec_x, path_vec_y, 0])[2]
+if cross_product < 0:
+    lane_weight[path_num] += 100
+```
+- 우측 기준 벡터 vs 경로 벡터 외적 결과가 음수이면 → 경로가 우측으로 침범
+
+- 회전 반경(min_r)에 따라 외적 계산 대상 경로를 다르게 설정:
+  - `min_r < 100` → 모든 경로(0~14번)에 대해 외적 계산
+  - `min_r ≥ 100` → 좌측 경로(0~4번 또는 0~1번)만 외적 계산
+    → 우측 경로(10~14번)는 도로 우측으로 벗어날 가능성이 크기 때문
+
+6) 🔹 정해진 사각형 영역 진입 여부 검사
+```python
+if self.rectangle(path_point.x, path_point.y, rect):
+    lane_weight[path_num] += 100
+```
+- 경로가 특정 사각형 영역 (rect) 내부 진입 시 추가 가중치 부여
+
+7) 🔹 최종 경로 선택
+```python
+selected_lane = lane_weight.index(min(lane_weight))
+```
+- 가중치가 가장 낮은 경로 인덱스를 선택
+→ 안전하고 도로 중앙에 가까운 경로 우선
+
+** → 최종적으로 각 경로에 누적된 가중치를 비교하여, 가장 안전하고 중심에 가까운 경로를 선택함.**
+
+4)🔹 calculate_curvature() 함수
+✅ 목적
+로컬 경로(local_path)의 곡률 반지름(Radius of Curvature, r)을 계산하여, 차량이 주행 중 얼마나 급하게 회전하고 있는지를 판단하기 위한 함수.
+
+✅ 왜 곡률이 필요한가?
+차량의 회전 반경이 작을수록 회피 경로가 급격히 꺾이게 되므로,
+
+곡률 반지름 r이 작으면 → 차량이 회전 중일 가능성이 높고
+
+곡률 반지름 r이 크면 → 직선 주행 중일 가능성이 높음
+
+이 정보를 기반으로 collision_check()에서 경로 평가 방식을 다르게 적용함
+
+```python
+for i in range(point_num, len(local_path.poses) - point_num):
+    x_list = []
+    y_list = []
+    for box in range(-point_num, point_num):
+        x = local_path.poses[i + box].pose.position.x
+        y = local_path.poses[i + box].pose.position.y
+        x_list.append([-2 * x, -2 * y, 1])
+        y_list.append((-x * x) - (y * y))
+
+    A = np.array(x_list)
+    B = np.array(y_list)
+    a, b, c = np.dot(np.linalg.pinv(A), B)
+    r = (a ** 2 + b ** 2 - c) ** 0.5
+```
+선택된 경로 점(i) 기준으로 앞뒤 2×point_num개의 점을 사용해 원의 방정식을 피팅
+
+A, B 행렬을 구성해서 최소자승법(Least Squares) 으로 원의 중심(a,b)과 항 c를 구함
+
+곡률 반지름 r은 다음과 같이 계산됨: $`sqrt(a^2+b^2-c)`$
+
+✅ 반환값
+여러 지점에서 계산된 반지름 중 최솟값(min_r) 을 반환
+
+이 값이 작을수록 회전이 급격한 곡선임을 의미함
+
+✅ 예시 해석
+min_r < 100이면 현재 차량은 커브길을 돌고 있는 상태로 간주 → 우측 회피 시 더 조심해야 함
+
+min_r >= 100이면 거의 직선 주행 중 → 경로에 대한 외적 계산 범위 축소 가능
+
+</details>
+
+## 🔻 아쉬운 점 및 개선 방향
+이번 프로젝트에서는 State Lattice Planner 기반 정적 장애물 회피 시스템을 중심으로, 우측 경계 기반 충돌 판단, 곡률 반지름에 따른 회피 경로 평가 등 다양한 로컬 플래닝 요소를 직접 구현했다. 전체적인 로직 구조와 기능은 명확하게 완성되었지만, 프로젝트를 마무리하며 몇 가지 아쉬움과 개선의 여지를 느꼈다.
+
+우선, 도로와 인도를 정확하게 구분하는 인지 방법의 한계가 있었다. 대회 규정상 MGeo 기반의 고정밀 지도 사용이 불가능했기 때문에, 우측 경계선을 직접 Path 형태로 입력받아 비교하는 방식으로 대체할 수밖에 없었다. 이 방식은 구조적으로 단순하고 가벼운 장점이 있었지만, 정밀도 면에서는 부족했고, 도로 구조가 불규칙하거나 차선이 불명확한 상황에서는 오탐지 가능성이 있었다. 이를 보완하기 위해 SLAM 기반의 지도 구성이나 환경 정합 기술을 활용했다면 보다 일반화된 경계 인식이 가능했을 것으로 보인다.
+
+또한 동적 장애물 회피 알고리즘까지 구현하지 못한 점은 가장 큰 아쉬움 중 하나다. YOLO를 활용한 객체 탐지는 성공적으로 수행되었지만, 탐지된 객체의 움직임을 추적하고 동적으로 회피 경로를 수정하는 로직은 시간 제약으로 인해 끝내 구현하지 못했다. 향후에는 Kalman Filter 또는 SORT/DeepSORT 기반의 객체 추적 알고리즘을 활용하여, 객체의 속도나 방향 정보를 바탕으로 정적/동적 장애물 분리 및 동적 회피 경로 생성까지 확장할 수 있을 것이다.
+
+마지막으로, 정적 회피 알고리즘과 YOLO를 동시에 실행했을 때의 성능 저하 문제도 현실적인 고민이었다. 객체 탐지와 경로 생성을 병렬로 처리하면서 렉이 발생했고, ROS의 싱글 쓰레드 구조에서는 처리 지연이 명확하게 나타났다. 이를 개선하기 위해서는 멀티 쓰레드 처리, 연산 우선순위 조정, 또는 YOLO 모델의 경량화(Tiny-YOLO 등)를 적용해 시스템 최적화를 시도할 필요가 있다.
 
 
 
