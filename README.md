@@ -3,8 +3,8 @@
 ## 📌 시스템 구조 (System Architecture)
 
 아래는 센서부터 제어 명령까지 전체 처리 흐름을 보여주는 플로우차트입니다.
-<p align="left">
-  <img src="https://github.com/user-attachments/assets/a353038b-8bd2-40bd-abc0-087ef68d2ef9" alt="이미지 설명" width="600">
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/a8b9b25a-f5da-4dd4-a145-a2ec60e16f4b" alt="이미지 설명" width="600">
 </p>
 
 ## 📌 패키지 상세 구성 및 주요 기능
